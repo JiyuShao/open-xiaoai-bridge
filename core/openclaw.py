@@ -923,13 +923,17 @@ class OpenClawManager:
                     text = data.get("text", "")
                     delta = data.get("delta", "")
 
-                    if run_id and text:
+                    if run_id and (text or delta):
                         logger.debug(
-                            f"[OpenClaw] Agent assistant stream for {run_id}: text len={len(text)}, delta_len={len(delta) if delta else 0}"
+                            f"[OpenClaw] Agent assistant stream for {run_id}: text len={len(text or '')}, delta_len={len(delta) if delta else 0}"
                         )
-                        # Accumulate or store the text
-                        cls._response_texts[run_id] = text
-                        # Don't set event yet, wait for lifecycle end
+                        # text 是完整快照；新版协议的后续事件可能只携带 delta。
+                        # 同时存在二者时使用快照，避免重复拼接首个增量。
+                        if text:
+                            cls._response_texts[run_id] = text
+                        elif delta:
+                            cls._response_texts[run_id] = cls._response_texts.get(run_id, "") + delta
+                        # 等待生命周期结束后再提交完整回复。
 
                 elif stream == "lifecycle":
                     phase = data.get("phase", "")
