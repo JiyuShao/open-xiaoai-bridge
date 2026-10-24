@@ -80,9 +80,25 @@ async def check_audio(uri, token, path, expected):
 async def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--uri", default="ws://127.0.0.1:14399")
-    parser.add_argument("--negative", type=Path, required=True)
-    parser.add_argument("--positive", type=Path, required=True)
+    parser.add_argument("--negative", type=Path)
+    parser.add_argument("--positive", type=Path)
+    parser.add_argument("--cases", type=Path, help="音频清单 JSON：file（相对清单目录）、expected（0/1）")
     args = parser.parse_args()
+    if args.cases:
+        if args.negative or args.positive:
+            parser.error("--cases 不能与 --negative/--positive 混用")
+        manifest = json.loads(args.cases.read_text())
+        if not isinstance(manifest, list) or not manifest:
+            parser.error("音频清单必须是非空列表")
+        cases = []
+        for case in manifest:
+            if not isinstance(case, dict) or type(case.get("expected")) is not int or case["expected"] not in (0, 1):
+                parser.error("每项 expected 必须为整数 0 或 1")
+            cases.append((args.cases.parent / case["file"], case["expected"]))
+    else:
+        if not args.negative or not args.positive:
+            parser.error("提供 --cases 或同时提供 --negative 与 --positive")
+        cases = [(args.negative, 0), (args.positive, 1)]
     token = os.environ.get("OPEN_XIAOAI_TOKEN")
     if not token:
         raise ValueError("必须从私有环境提供 OPEN_XIAOAI_TOKEN")
@@ -96,8 +112,16 @@ async def main():
             if asyncio.get_running_loop().time() >= deadline:
                 raise
             await asyncio.sleep(0.25)
-    await check_audio(args.uri, token, args.negative, 0)
-    await check_audio(args.uri, token, args.positive, 1)
+    failures = []
+    for path, expected in cases:
+        try:
+            await check_audio(args.uri, token, path, expected)
+        except AssertionError as exc:
+            logger.error(str(exc), module="RuntimeTest")
+            failures.append(path.name)
+    if failures:
+        raise AssertionError(f"{len(failures)}/{len(cases)} 项未通过: {', '.join(failures)}")
+    logger.info(f"全部 {len(cases)} 项音频验证通过", module="RuntimeTest")
 
 
 if __name__ == "__main__":

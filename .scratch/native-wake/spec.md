@@ -1,7 +1,7 @@
 # 第一期：自定义唤醒词唤起原生小爱
 
 Status: ready-for-agent
-Execution: software-implemented; deployment-and-device-validation-pending
+Execution: server-validated; offline-device-preparation-done; physical-evidence-and-device-validation-pending
 Scope: 仅改变唤醒入口，保留原生业务处理；设备安装尚未开始。
 
 ## Problem Statement
@@ -27,7 +27,7 @@ Scope: 仅改变唤醒入口，保留原生业务处理；设备安装尚未开�
 
 ## Implementation Decisions
 
-- 在服务器侧做关键词检测，音箱 Client 提供音频和设备指令通道。用户已确认使用现有 Docker 服务器，不使用 PVE；服务器系统、架构、资源及访问方式待确认。
+- 在服务器侧做关键词检测，音箱 Client 提供音频和设备指令通道。用户已确认使用现有 Docker 服务器，不使用 PVE；已在 iStoreOS x86_64 / Docker 27.3.1 验证，真机接入网络仍待设备 IP 确定。
 - 识别到自定义关键词后，只调用已有原生唤醒能力，把后续指令交回原生流程。调用返回成功不代替用户听到唤醒反馈和原生完成指令的证据。
 - 将关键词检测启动、关键词模型准备与外部 AI 后端开关解耦；所有外部后端保持关闭，不通过虚假启用后端来启动检测。
 - 配置必要的关键词/VAD 模型；不为一期安装本地全文 ASR 模型或自定义 TTS。

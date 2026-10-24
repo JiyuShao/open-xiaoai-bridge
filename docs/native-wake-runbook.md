@@ -22,7 +22,7 @@
 | KWS/VAD 模型 | 配套包中六个 KWS/VAD 文件已提取并记录 SHA256；不挂载全文 ASR 模型 |
 | Git | 独立 fork，本地分支 `feature/native-wake` |
 
-设备端需从补丁固件与 SSH/Client 安装条件开始准备。下一步确认可恢复的原厂备份、备用系统与刷机工具，服务器验证可独立进行。固件版本一致仅解决版本匹配的一项条件，不代表已具备刷机条件。
+设备端尚未操作；配套制品和 Mac 工具依赖已准备。下一步是接线后的只读识别、启动环境与分区核验、备份读取验证，以及原厂功能基线。固件版本一致仅解决版本匹配的一项条件，不代表已具备刷机条件。
 
 Bridge 基线为 `a1f77a888f601c1536a14494d30c959cbf7a54e4`，保存在本仓 Git 历史。Client 候选版本为 `coderzc/open-xiaoai@14e1034ba75698be7d3f331b9822b7043deaf032`；二进制与本机兼容性待验证。
 
@@ -172,3 +172,79 @@ docker exec -e PYTHONPATH=/app xiaoai-lixiang-wake-test /app/.venv/bin/python /t
 首轮与停止/重启后第二轮结果一致：缺 Token / 错 Token 均返回 401；阴性合成语音 0 次唤醒 RPC，阳性合成语音 1 次。原生请求由假 Client 应答成功，不代表音箱已经唤醒；未执行收到的任何 shell 请求，也未播放连接提示。停止时退出码 0，未发生 OOM。
 
 实际核验回环端口、internal 网络、2 核 / 2 GB 上限及 `restart=no` 均生效，运行环境不含临时构建代理。一次空闲采样约 244 MiB 内存。容器当前保持运行，临时构建下载通道已关闭，失败构建的临时容器已清理，原有容器继续运行。源码、模型与日志保留在专属数据目录；本次复测输出保存在其 `runtime-test.log`。真人录音、真机远场、原生功能共存与恢复验收仍未执行。
+
+## 真机前准备与明日流程
+
+核验范围：LX06 1.94.13、当前未刷机/SSH/Client，资料截止 2026-10-24。按上游源码、发布 API、构建记录与本地文件实测核验；以下区分制品准备完成与本机恢复条件未知。用户已确认明日使用当前 Apple Silicon Mac，数据线与拆机工具均已有。
+
+### 硬件与 Mac
+
+上游 [LX06 接线说明](https://github.com/coderzc/open-xiaoai/blob/14e1034ba75698be7d3f331b9822b7043deaf032/docs/flash.md#L6-L24) 明确要求拆开外壳，连接主板内部的 Micro USB 调试口；数据线须能传数据。外露 Type-C、无需拆机的是 OH2P。今天未拆机或插接音箱。
+
+已按 [Mac 工具说明](https://github.com/coderzc/open-xiaoai/blob/14e1034ba75698be7d3f331b9822b7043deaf032/packages/flash-tool/README.md) 安装 `libusb-compat 0.1.9`，核对工具 arm64 切片引用的 Homebrew 动态库存在。`update` 和 packer 均为 arm64/x86_64 universal；本机无需为原生 arm64 工具强制使用 Rosetta。尚未执行设备识别，动态库存在不等于 USB 访问或恢复已验证。
+
+### 已下载的制品
+
+本机缓存统一位于 `.cache/native-wake-preflight/assets/`，不进 Git。固件与 Client 均已下载并重新计算 SHA256，与发布 API 提供的 digest 一致；固件由 `file` 识别为 SquashFS v4 / xz。工具从固定上游提交提取，未执行。目录内 `SHA256SUMS` 可用于明天再次校验。
+
+| 文件 | SHA256 |
+| --- | --- |
+| `LX06_1.94.13.squashfs` | `317a54909f12b63f22128965bf9005c06435d15f61c4202bb88c4524bf1e2ef4` |
+| `LX06_1.94.13_patched.squashfs` | `3fbcfcd8a2130f5421d0bc3a3b22cb5a3de59b5d3678a3a14b23541aa9474225` |
+| `client` | `bcf065e3809913f0dc7708c7487f91e31bc83e27b01f36b914f76fe6825876b5` |
+| `flash-tool/flash` | `d801d8e393d7f452989a1c089584140b8f1467e91b7467547a1115d3069b361e` |
+| `flash-tool/macos/update` | `19f37cc129d061512c24bffbbad3a51355d976c12d6091366fe7dfce3c949b30` |
+| `flash-tool/macos/aml_image_v2_packer` | `3666083d441eb1abcb1e4a6a2c7ba89c2b134984d99afc1f203222080476c2e4` |
+
+固件来源为 [idootop 的 LX06_1.94.13 发布](https://github.com/idootop/open-xiaoai/releases/tag/LX06_1.94.13)（2026-01-01），它也是 [固定版本补丁说明](https://github.com/coderzc/open-xiaoai/blob/14e1034ba75698be7d3f331b9822b7043deaf032/packages/client-patch/README.md) 指向的发布，不使用 coderzc 的另一个 1.88.206 固件。
+
+Client 来源为 [coderzc 发布](https://github.com/coderzc/open-xiaoai/releases/tag/open-xiaoai-client)。该标签指向旧提交，但资产后来被覆盖更新；本次资产更新时间为 2026-04-01，不能凭标签日期判断其源码或鉴权支持。已核对 [成功构建 23848790049](https://github.com/coderzc/open-xiaoai/actions/runs/23848790049)：构建提交 `355bed514605586a24562306f7f2356dcc9cb34e` 的 `packages/client-rust` 目录树与固定版本 `14e1034…` 完全一致，均为 `e57c8b852ae7423b6a2647c46fe8b84b2a5661c4`。资产更新时间与构建完成时间吻合；二进制含 `OPEN_XIAOAI_TOKEN`、`Authorization` 和 `Bearer` 字符串。它是 ARM EABI5、动态链接 `/lib/ld-linux-armhf.so.3`，与源码的 ARMv7 hard-float 目标一致。这些是来源与兼容性线索，不是可复现构建证明或本台设备运行结果；无需据旧标签直接判定缺鉴权或重编译。明天仍需核验设备动态链接器和运行结果。
+
+### 补丁与恢复的边界
+
+固定版本的 [补丁源码](https://github.com/coderzc/open-xiaoai/tree/14e1034ba75698be7d3f331b9822b7043deaf032/packages/client-patch/patches) 除 SSH 外还修改 root/串口登录、阻止 OTA、让 `rc.local` 执行 `/data/init.sh`，并为 LX06 修改 ALSA 共享采音配置和 `libxaudio_engine.so` 的采音设备字符串。保留原生业务是上游主张与设计目的，不能理解为系统文件完全不变；特别要验收播放中采音与原厂功能。本次还用 `unsquashfs 4.7.5` 对已下载的两份镜像只读提取并比较 10 个目标文件，确认上述 SSH、OTA、启动钩子、两份 ALSA 配置及音频引擎确有变化；音频引擎原有 `hw:0,3` 字符串在补丁镜像中消失。这是定向检查，不是全镜像差异审计。详细文件摘要保存在本地缓存 `firmware-inspection.json`。
+
+下载的“原版”是开源项目提供的根文件系统镜像，不是本台设备备份，也不是小米完整救砖包。它没有证明能够恢复本机身份信息、data、bootloader 或启动环境。备用系统切换只有在 system1/boot1 确实完好且与 data 兼容时才可能恢复；当前尚未读取本机这些信息。
+
+[flash 包装脚本](https://github.com/coderzc/open-xiaoai/blob/14e1034ba75698be7d3f331b9822b7043deaf032/packages/flash-tool/flash) 仅提供连接、延时、切换和写分区功能，没有备份入口；它忽略底层部分退出状态并隐藏 stderr，因此“成功”文字不构成验证。底层二进制存在读取命令的帮助字符串，但未证明能在本机读取正确分区与长度。备份读取方式必须在接线后根据真实输出确认，不能假设当前无 SSH 的设备已能用 SSH 导出备份。
+
+### 2026-10-25 操作顺序与停止条件
+
+| 阶段 | 明天要做 | 进入下一阶段的条件 |
+| --- | --- | --- |
+| 1. 原厂基线 | 先用原厂词测试反馈、天气、音乐、闹钟/计时器；仅对已有且获授权的米家设备做安全操作，测试后清理临时闹钟等 | 记录实际结果；当前全为待测 |
+| 2. 物理与只读识别 | 由用户完成必要拆机/接线；检查 Mac USB 枚举和设备识别；只读取得真实启动环境、分区名称/长度和现有系统信息 | 型号、USB 访问、真实分区与启动槽有证据，不能用包装脚本的成功文字代替 |
+| 3. 备份与恢复核验 | 确认可行的只读导出方式，按实际长度保存；重复读回比对、计算摘要；私下保存可能含身份信息的分区数据 | 本机备份及备用系统/恢复路径有证据。读取能力或恢复条件仍不明时停止，保持不写入 |
+| 4. 审阅设备操作 | 根据已取得的信息逐条确定目标分区、补丁与恢复步骤，由用户批准具体操作 | 尚未授权任何拆机代操作、分区写入、`saveenv` 或启动项变更 |
+| 5. 受控安装与连接 | 仅执行已批准步骤；核验 SSH，修改默认凭据；检查 ARM 动态链接器；核验已缓存 Client 摘要后传入，首次前台运行 | 保留原始输出，确认真实采音与连接；异常立即停止，不跨版本刷写 |
+| 6. 新入口与原生对照 | 安静环境先说“理想同学”，等反馈再说指令；与原厂基线逐项比较，再测播放中、远场、回声、断线与重启 | 按任务 06 逐项记录，不把 RPC 受理算成设备唤醒 |
+
+当前容器仅绑定服务器 `127.0.0.1:14399` 且网络为 internal；音箱接入前须根据其真实 IP 规划受限 LAN 端口、网络和来源访问控制，再通过私有配置给 Client 相同 Token。该网络变更今天未执行；不要把测试编排当作现成真机接入配置。
+
+首次 Client 验证不直接运行远端 `curl | sh`，也不直接覆盖 `/data/init.sh`。[init.sh](https://github.com/coderzc/open-xiaoai/blob/14e1034ba75698be7d3f331b9822b7043deaf032/packages/client-rust/init.sh) 会下载可变制品且不核验摘要；[boot.sh](https://github.com/coderzc/open-xiaoai/blob/14e1034ba75698be7d3f331b9822b7043deaf032/packages/client-rust/boot.sh) 依赖 ping 外网、在文件缺失时下载 Client 并隐藏日志。先用已核验制品前台确认效果，长期启动项留到真机验收后决定。停止 Bridge 不会撤销这些设备端修改。
+
+### 扩展静默测试与已知限制
+
+未改变 KWS/VAD 阈值。测试通过真实模型、Rust 服务和 WebSocket 传输，仅使用不执行命令的假 Client。语料由 macOS 26.5 的 Tingting/Meijia 合成为文件，覆盖语速 140/190/240、词首/句中呼叫、近似词、“小爱同学”、普通讲话、静音、白噪声和加噪阳性；全程未播放声音。
+
+| 样本组 | 结果 |
+| --- | --- |
+| 纯语音阳性：两音色 × 三语速、两条带上下文呼叫 | 8/8 各触发 1 次 |
+| 阴性：14 条近似词/其他讲话 + 静音/纯白噪声 | 16/16 均为 0 次 |
+| 阳性 + 合成白噪声，整段 SNR 约 10 dB | 0/1，漏唤醒，原始测试退出码为 1 |
+| 追加阳性 + 合成白噪声，SNR 约 15/20 dB | 2/2 各触发 1 次 |
+
+共 27 个单次样本，26 项符合预期；10 dB 漏检保持失败，未修改期望值或调参掩盖。该样本不足以估计日常成功率；真实麦克风、距离、回声与环境声仍未验收。明天先在安静环境建立真机基线，再判断是否需要调整检测参数。
+
+本机语料与定义保存在 `.cache/native-wake-preflight/corpus/`，服务器保存在专属数据目录的 `preflight/corpus/`。每个音频的摘要见同目录 `SHA256SUMS`；两个清单分别为 `cases.json`（25 项，SHA256 `05e93160aae527fe79988f81793d568cf86109bf53a22078d8f4e6d9495c494c`）和 `noise-cases.json`（2 项，SHA256 `0e6e95e40d1c7592e2e27f80aa2867c6749aa823020bd5384f0f056a674b6c42`）。原始服务器结果保留在 `preflight/runtime-corpus.log` 与 `preflight/runtime-noise.log`。
+
+复制语料目录内容到验证容器 `/tmp/preflight-corpus/` 后，使用同一测试工具复测：
+
+```bash
+docker exec -e PYTHONPATH=/app xiaoai-lixiang-wake-test /app/.venv/bin/python /tmp/native_wake_runtime.py --uri ws://127.0.0.1:4399 --cases /tmp/preflight-corpus/cases.json
+docker exec -e PYTHONPATH=/app xiaoai-lixiang-wake-test /app/.venv/bin/python /tmp/native_wake_runtime.py --uri ws://127.0.0.1:4399 --cases /tmp/preflight-corpus/noise-cases.json
+```
+
+第一条预期会报告已知的 10 dB 漏检并返回非零；第二条本次通过。工具会继续检查清单中其余样本，最终汇总失败，既有 `--negative` / `--positive` 双文件用法仍可用。
+
+本轮本地回归检查共 86 项，83 项通过、3 项真实服务测试跳过；Python 编译与 diff 检查通过。27 项真实模型合成语音验证单独记录，保留 10 dB 样本失败，不计入离线回归通过数。
