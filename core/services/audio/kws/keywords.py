@@ -1,4 +1,6 @@
+import os
 import re
+import tempfile
 from pathlib import Path
 
 
@@ -17,6 +19,7 @@ def init_project_context():
 init_project_context()
 
 from core.native_wake import native_wake_enabled, validate_native_wake_environment
+from core.utils.base import get_env_bool
 from core.utils.config import ConfigManager
 from core.utils.file import get_model_file_path
 from core.utils.logger import logger
@@ -30,20 +33,10 @@ def should_generate_keywords():
     if native_wake_enabled():
         return True, ""
 
-    xiaozhi_enabled = os.environ.get("XIAOZHI_ENABLE", "").lower() in ("1", "true", "yes")
-    # 兼容 OPENCLAW_ENABLE (新) 和 OPENCLAW_ENABLED (旧)
-    openclaw_env = os.environ.get("OPENCLAW_ENABLE") or os.environ.get("OPENCLAW_ENABLED") or ""
-    openclaw_enabled = openclaw_env.lower() in ("1", "true", "yes")
-    openai_enabled = os.environ.get("OPENAI_ENABLE", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    qwenpaw_enabled = os.environ.get("QWENPAW_ENABLE", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    xiaozhi_enabled = get_env_bool("XIAOZHI_ENABLE")
+    openclaw_enabled = get_env_bool("OPENCLAW_ENABLE", alias="OPENCLAW_ENABLED")
+    openai_enabled = get_env_bool("OPENAI_ENABLE")
+    qwenpaw_enabled = get_env_bool("QWENPAW_ENABLE")
 
     if (
         not xiaozhi_enabled
@@ -95,13 +88,27 @@ def main():
         tokens_type=args["tokens_type"],
         bpe_model=args["bpe_model"],
     )
-    with open(args["output"], "w", encoding="utf8") as f:
-        for _, txt in enumerate(encoded_texts):
-            line = "".join(txt)
-            if re.match(r"^[▁A-Z\s]+$", line):
-                f.write(" ".join(txt) + "\n")
-            else:
-                f.write(" ".join(txt) + f" @{line}" + "\n")
+    if len(encoded_texts) != len(args["texts"]) or any(
+        not tokens or any(not isinstance(token, str) or not token.strip() for token in tokens)
+        for tokens in encoded_texts
+    ):
+        logger.error("关键词编码为空或数量不匹配，保留原词表", module="KWS")
+        return 1
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf8", dir=Path(args["output"]).parent,
+            prefix=".keywords-", delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            for tokens in encoded_texts:
+                line = "".join(tokens)
+                suffix = "" if re.match(r"^[▁A-Z\s]+$", line) else f" @{line}"
+                stream.write(" ".join(tokens) + suffix + "\n")
+        os.replace(temporary, args["output"])
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     logger.debug(f"Keyword file generated: {args['output']}", module="KWS")
     return 0
 

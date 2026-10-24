@@ -12,7 +12,7 @@ export QWENPAW_ENABLE="${QWENPAW_ENABLE:-0}"
 export API_SERVER_ENABLE="${API_SERVER_ENABLE:-0}"
 export AUDIO_INPUT_ENABLE="${AUDIO_INPUT_ENABLE:-1}"
 case "${1:-}" in
-    --check) exec python3 scripts/check_native_wake.py ;;
+    --check) exec bash scripts/start.sh "$@" ;;
     "") exec bash scripts/start.sh ;;
     *) echo "用法: bash scripts/native-wake.sh [--check]" >&2; exit 2 ;;
 esac

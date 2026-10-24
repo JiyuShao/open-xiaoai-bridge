@@ -245,8 +245,8 @@ class NativeStartupTest(unittest.TestCase):
 
     def test_check_is_offline_and_reports_missing_prerequisites(self):
         result = subprocess.run(
-            ["bash", "scripts/native-wake.sh", "--check"], cwd=ROOT,
-            env={"PATH": os.environ["PATH"]}, text=True, capture_output=True,
+            [sys.executable, "main.py", "--check"], cwd=ROOT,
+            env={"PATH": os.environ["PATH"], "NATIVE_WAKE_ENABLE": "1"}, text=True, capture_output=True,
         )
         self.assertEqual(result.returncode, 1)
         self.assertIn("OPEN_XIAOAI_TOKEN", result.stdout)

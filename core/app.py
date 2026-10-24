@@ -17,7 +17,7 @@ import time
 from core.native_wake import NativeWakeController
 from core.xiaozhi import XiaoZhi
 from core.xiaoai import XiaoAI
-from core.ref import get_speaker, set_xiaozhi, set_app
+from core.ref import get_kws, get_speaker, set_xiaozhi, set_app
 from core.utils.config import ConfigManager
 from core.utils.logger import logger
 from core.services.protocols.typing import (
@@ -104,6 +104,8 @@ class MainApp:
         # Event loop and threads
         self.loop = asyncio.new_event_loop()
         self.loop_thread = None
+        self.main_loop_thread = None
+        self._xiaoai_future = None
         self.config_watch_thread = None
         self.shutdown_requested = False
         self.running = False
@@ -143,6 +145,14 @@ class MainApp:
         return None
 
     def run(self, enable_api_server: bool = False):
+        """启动失败时释放已创建的原生模式资源，并把错误交回入口。"""
+        try:
+            self._run(enable_api_server)
+        except BaseException:
+            self.shutdown()
+            raise
+
+    def _run(self, enable_api_server: bool = False):
         """Start the main application.
 
         Args:
@@ -195,6 +205,11 @@ class MainApp:
                     "Either enable audio input, or set input_mode='xiaoai_asr' in config."
                 )
 
+        if self._enable_native_wake:
+            # 导入与同步模型加载均先于设备服务；失败时不开放监听。
+            from core.services.audio.kws import KWS
+            KWS.start()
+
         # Create event loop thread
         self.loop_thread = threading.Thread(target=self._run_event_loop)
         self.loop_thread.daemon = True
@@ -205,7 +220,10 @@ class MainApp:
         time.sleep(0.1)
 
         # Initialize XiaoAI service
-        asyncio.run_coroutine_threadsafe(XiaoAI.init_xiaoai(), self.loop)
+        self._xiaoai_future = asyncio.run_coroutine_threadsafe(
+            XiaoAI.init_xiaoai(event_loop=self.loop if self._enable_native_wake else None),
+            self.loop,
+        )
 
         if self._enable_xiaozhi:
             # Create XiaoZhi instance
@@ -235,9 +253,9 @@ class MainApp:
             asyncio.run_coroutine_threadsafe(self.api_server.start(), self.loop)
 
         # Start main loop thread
-        main_loop_thread = threading.Thread(target=self._main_loop)
-        main_loop_thread.daemon = True
-        main_loop_thread.start()
+        self.main_loop_thread = threading.Thread(target=self._main_loop)
+        self.main_loop_thread.daemon = True
+        self.main_loop_thread.start()
 
         # Start audio services
         if (
@@ -258,7 +276,8 @@ class MainApp:
                     from core.services.audio.vad import VAD
                     VAD.start()
                 # KWS 内部已含 Silero 门控；原生模式无需独立 VAD 会话线程。
-                KWS.start()
+                if not self._enable_native_wake:
+                    KWS.start()
                 logger.info("[MainApp] Audio input enabled (KWS started)")
             else:
                 logger.info("[MainApp] Audio input disabled (VAD/KWS not started)")
@@ -296,7 +315,15 @@ class MainApp:
     def _run_event_loop(self):
         """Run asyncio event loop in separate thread."""
         asyncio.set_event_loop(self.loop)
-        self.loop.run_forever()
+        try:
+            self.loop.run_forever()
+        finally:
+            pending = asyncio.all_tasks(self.loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            self.loop.close()
 
     def _start_config_watcher(self):
         """Start config file watcher thread."""
@@ -339,7 +366,7 @@ class MainApp:
 
     def _main_loop(self):
         """Main application loop."""
-        self.running = True
+        self.running = not self.shutdown_requested
 
         while self.running:
             for event_type, event in self.events.items():
@@ -395,8 +422,13 @@ class MainApp:
 
     def shutdown(self):
         """Shutdown the application."""
+        if self.shutdown_requested:
+            return
         self.shutdown_requested = True
         self.running = False
+
+        if self._enable_native_wake and get_kws() is not None:
+            get_kws().stop()
 
         if self.xiaozhi:
             self.xiaozhi.shutdown()
@@ -407,15 +439,15 @@ class MainApp:
             )
 
         # Close OpenClaw connection if connected
-        if OpenClawManager.is_connected():
+        if self._enable_openclaw and OpenClawManager.is_connected():
             asyncio.run_coroutine_threadsafe(
                 OpenClawManager.close(), self.loop
             )
-        if OpenAIManager.is_enabled():
+        if self._enable_openai and OpenAIManager.is_enabled():
             asyncio.run_coroutine_threadsafe(
                 OpenAIManager.close(), self.loop
             )
-        if QwenPawManager.is_enabled():
+        if self._enable_qwenpaw and QwenPawManager.is_enabled():
             asyncio.run_coroutine_threadsafe(
                 QwenPawManager.close(), self.loop
             )
@@ -427,7 +459,18 @@ class MainApp:
             self.loop_thread.join(timeout=1.0)
 
         if self.config_watch_thread and self.config_watch_thread.is_alive():
-            self.config_watch_thread.join(timeout=1.0)
+            self.config_watch_thread.join(timeout=1.5)
+        if self.main_loop_thread and self.main_loop_thread.is_alive():
+            self.main_loop_thread.join(timeout=1.0)
+        if self.loop_thread is None and not self.loop.is_closed():
+            self.loop.close()
+
+    def check_service(self):
+        """设备服务异常或意外结束时，让进程失败而非空转。"""
+        if self._xiaoai_future is not None and self._xiaoai_future.done():
+            self._xiaoai_future.result()
+            if not self.shutdown_requested:
+                raise RuntimeError("小爱音箱服务已意外结束")
 
     # Public API
 

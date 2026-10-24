@@ -7,6 +7,14 @@ def get_env(key: str, default_value: str | None = None):
     return os.environ.get(key, default_value)
 
 
+def get_env_bool(key: str, default: bool = False, *, alias: str | None = None) -> bool:
+    """统一解析启动开关，接受大小写、首尾空白及 Rust 支持的 on。"""
+    value = os.environ.get(key)
+    if not value and alias is not None:
+        value = os.environ.get(alias)
+    return default if value is None else value.strip().lower() in ("1", "true", "yes", "on")
+
+
 def to_set(data):
     if isinstance(data, list):
         return list(set(data))

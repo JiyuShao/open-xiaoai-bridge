@@ -9,6 +9,18 @@ set -e
 # cd to project root (parent of scripts/)
 cd "$(dirname "$0")/.."
 
+# 离线检查优先使用已安装的项目解释器；不执行 uv sync 或下载 Python。
+if [[ "${1:-}" == "--check" ]]; then
+    if [[ -x .venv/bin/python ]] && .venv/bin/python -c 'import sys; sys.exit(sys.version_info < (3, 12))'; then
+        exec .venv/bin/python main.py "$@"
+    fi
+    if command -v uv >/dev/null 2>&1; then
+        exec uv run --offline --no-project --python '>=3.12' python main.py "$@"
+    fi
+    echo "错误: 离线检查需要现有的 Python 3.12+ 项目环境或 uv 缓存。" >&2
+    exit 1
+fi
+
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -19,18 +31,6 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  Open-XiaoAI Bridge 启动脚本${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
-
-XIAOZHI_ENABLED=$(printf '%s' "${XIAOZHI_ENABLE:-}" | tr '[:upper:]' '[:lower:]')
-# 兼容 OPENCLAW_ENABLE (新) 和 OPENCLAW_ENABLED (旧)
-OPENCLAW_ENABLE_VALUE=$(printf '%s' "${OPENCLAW_ENABLE:-${OPENCLAW_ENABLED:-}}" | tr '[:upper:]' '[:lower:]')
-OPENAI_ENABLE_VALUE=$(printf '%s' "${OPENAI_ENABLE:-}" | tr '[:upper:]' '[:lower:]')
-QWENPAW_ENABLE_VALUE=$(printf '%s' "${QWENPAW_ENABLE:-}" | tr '[:upper:]' '[:lower:]')
-
-# 原生模式只使用预先准备好的 KWS/VAD 模型，不下载包含全文 ASR 的整包。
-NATIVE_WAKE_ENABLE_VALUE=$(printf '%s' "${NATIVE_WAKE_ENABLE:-}" | tr '[:upper:]' '[:lower:]')
-if [[ "$NATIVE_WAKE_ENABLE_VALUE" =~ ^(1|true|yes)$ ]]; then
-    python3 scripts/check_native_wake.py
-fi
 
 # 1. 检查 uv
 if ! command -v uv &> /dev/null; then
@@ -51,6 +51,17 @@ if CMAKE_POLICY_VERSION_MINIMUM=3.5 uv sync; then
 else
     echo -e "${RED}错误: 依赖安装失败${NC}"
     exit 1
+fi
+
+# 原生模式的规则、检查和关键词准备均由命令行/容器共用的入口负责。
+STARTUP_ENABLE_VALUES=$(uv run --no-sync python -c '
+from core.utils.base import get_env_bool
+keys = ("NATIVE_WAKE_ENABLE", "XIAOZHI_ENABLE", "OPENCLAW_ENABLE", "OPENAI_ENABLE", "QWENPAW_ENABLE")
+print(" ".join(str(int(get_env_bool(key, alias="OPENCLAW_ENABLED" if key == "OPENCLAW_ENABLE" else None))) for key in keys))
+')
+read -r NATIVE_WAKE_ENABLE_VALUE XIAOZHI_ENABLED OPENCLAW_ENABLE_VALUE OPENAI_ENABLE_VALUE QWENPAW_ENABLE_VALUE <<< "$STARTUP_ENABLE_VALUES"
+if [[ "$NATIVE_WAKE_ENABLE_VALUE" == "1" ]]; then
+    exec uv run --no-sync python main.py "$@"
 fi
 
 # Set DYLD_LIBRARY_PATH so sherpa-onnx can find libonnxruntime from onnxruntime package
@@ -129,24 +140,7 @@ if [[ "$NATIVE_WAKE_ENABLE_VALUE" =~ ^(1|true|yes)$ ]] || [[ "$XIAOZHI_ENABLED" 
         echo -e "${GREEN}✓ 模型文件下载并解压完成${NC}"
     fi
 
-    echo ""
-    echo -e "${YELLOW}生成关键词文件...${NC}"
-    set +e
-    keyword_output=$(uv run python core/services/audio/kws/keywords.py 2>&1)
-    keyword_status=$?
-    set -e
-    if [ $keyword_status -eq 0 ]; then
-        echo -e "${GREEN}✓ 关键词文件生成完成${NC}"
-        if [ -n "$keyword_output" ]; then
-            echo "$keyword_output"
-        fi
-    else
-        echo -e "${RED}✗ 关键词文件生成失败${NC}"
-        if [ -n "$keyword_output" ]; then
-            echo "$keyword_output"
-        fi
-        exit 1
-    fi
+
 else
     echo -e "${YELLOW}⚠ 小智、OpenClaw、OpenAI 和 QwenPaw 均未启用，跳过模型检查和关键词预生成${NC}"
 fi
@@ -201,4 +195,4 @@ echo -e "${GREEN}  启动 Open-XiaoAI Bridge...${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 
-uv run python main.py "$@"
+exec uv run --no-sync python main.py "$@"

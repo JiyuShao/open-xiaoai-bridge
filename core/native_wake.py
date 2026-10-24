@@ -2,14 +2,13 @@
 
 import asyncio
 import math
-import os
 import time
+
+from core.utils.base import get_env_bool
 
 
 def native_wake_enabled() -> bool:
-    return os.environ.get("NATIVE_WAKE_ENABLE", "").strip().lower() in (
-        "1", "true", "yes",
-    )
+    return get_env_bool("NATIVE_WAKE_ENABLE")
 
 
 def validate_native_wake_environment(*, enabled=None) -> None:
@@ -22,13 +21,10 @@ def validate_native_wake_environment(*, enabled=None) -> None:
         "XIAOZHI_ENABLE", "OPENCLAW_ENABLE", "OPENCLAW_ENABLED",
         "OPENAI_ENABLE", "QWENPAW_ENABLE", "API_SERVER_ENABLE",
     )
-    enabled = [key for key in backends if os.environ.get(key, "").strip().lower()
-               in ("1", "true", "yes")]
-    if enabled:
-        raise ValueError("原生唤醒模式需关闭这些开关: " + ", ".join(enabled))
-    if os.environ.get("AUDIO_INPUT_ENABLE", "1").strip().lower() not in (
-        "1", "true", "yes", "on",
-    ):
+    conflicts = [key for key in backends if get_env_bool(key)]
+    if conflicts:
+        raise ValueError("原生唤醒模式需关闭这些开关: " + ", ".join(conflicts))
+    if not get_env_bool("AUDIO_INPUT_ENABLE", True):
         raise ValueError("原生唤醒模式需要 AUDIO_INPUT_ENABLE=1")
 
 

@@ -43,7 +43,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /app/.venv /app/.venv
 COPY main.py .
-COPY config.py .
+COPY config.py config.native-wake.py ./
 COPY core ./core
 COPY scripts ./scripts
 
@@ -60,6 +60,5 @@ ENV LD_LIBRARY_PATH=/app/.venv/lib/python3.12/site-packages/onnxruntime/capi
 # 暴露 API 服务器端口
 EXPOSE 9092
 
-# 先初始化关键词模型（小智或外部后端启用时），然后启动主程序
-# 兼容 OPENCLAW_ENABLE (新) 和 OPENCLAW_ENABLED (旧)
-CMD ["/bin/bash", "-c", "source /app/.venv/bin/activate && OPENCLAW_VAL=\"${OPENCLAW_ENABLE:-${OPENCLAW_ENABLED:-}}\"; if [[ \"${NATIVE_WAKE_ENABLE:-}\" =~ ^(1|true|yes)$ ]]; then python scripts/check_native_wake.py || exit 1; fi; if [[ \"${NATIVE_WAKE_ENABLE:-}\" =~ ^(1|true|yes)$ ]] || [[ \"${XIAOZHI_ENABLE:-}\" =~ ^(1|true|yes)$ ]] || [[ \"$OPENCLAW_VAL\" =~ ^(1|true|yes)$ ]] || [[ \"${OPENAI_ENABLE:-}\" =~ ^(1|true|yes)$ ]] || [[ \"${QWENPAW_ENABLE:-}\" =~ ^(1|true|yes)$ ]]; then python core/services/audio/kws/keywords.py; fi && python main.py"]
+# 与命令行共用配置解析、检查和关键词准备；使用镜像内项目解释器。
+CMD ["/app/.venv/bin/python", "main.py"]

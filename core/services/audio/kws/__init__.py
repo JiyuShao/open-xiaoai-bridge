@@ -16,6 +16,10 @@ from core.wakeup_session import EventManager
 class _KWS:
     def __init__(self):
         set_kws(self)
+        self._running = False
+        self.thread = None
+        self.stream = None
+        self.audio = None
         self.config_manager = ConfigManager.instance()
         self.vad_threshold = 0.10
         
@@ -61,6 +65,7 @@ class _KWS:
 
         # 启动 KWS 服务
         self.paused = False
+        self._running = True
         self.thread = threading.Thread(target=self._detection_loop, daemon=True)
         self.thread.start()
         config = ConfigManager.instance()
@@ -68,6 +73,17 @@ class _KWS:
         keywords_threshold = config.get_app_config("kws.keywords_threshold", 0.2)
         min_silence_ms = config.get_app_config("kws.min_silence_duration", 480)
         logger.kws_event("关键词唤醒服务启动", f"关键词:[score:{keywords_score}, threshold:{keywords_threshold}], VAD:[threshold:{self.vad_threshold}, min_silence:{min_silence_ms}ms]")
+
+    def stop(self):
+        """停止检测线程并注销输入流；允许初始化中途失败后调用。"""
+        self._running = False
+        self.paused = True
+        if self.thread is not None and self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+        if self.stream is not None:
+            self.stream.close()
+        if self.audio is not None:
+            self.audio.terminate()
 
     def get_file_path(self, file_name: str):
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -81,7 +97,7 @@ class _KWS:
 
     def _detection_loop(self):
         self.stream.start_stream()
-        while True:
+        while self._running:
             # 读取缓冲区音频数据
             frames = self.stream.read(self.frame_size)
             if len(frames) != self.frame_size * 2:

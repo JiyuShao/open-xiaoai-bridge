@@ -43,7 +43,7 @@ Bridge 基线为 `a1f77a888f601c1536a14494d30c959cbf7a54e4`，保存在本仓 Gi
 bash scripts/native-wake.sh --check
 ```
 
-此命令只核对本地文件、模式开关、配置路径和 Token 是否已设置，输出模型摘要；不联网、不启动监听、不读取音箱。Token 值不会输出。缺失任何条件时返回非零。
+此命令共用 `main.py --check`：检查模式、Token 是否设置、Python 配置是否可加载、词表和冷却/超时参数，以及六个非空模型文件并输出摘要。不会加载声学模型、生成词表、安装依赖或启动监听。检查优先使用 `.venv/bin/python` 3.12+，否则通过 uv 的离线缓存选择 3.12+；没有合适解释器时明确失败，不下载 Python。Token 值不会输出。自定义 Python 配置文件会被执行，应保持其顶层代码没有网络或设备副作用。
 
 Token 通过本机私有环境设置，不发送到聊天、不写进版本库。仓库 `.env.example` 是字段说明；脚本不自动加载 `.env`。
 
@@ -53,15 +53,15 @@ Token 通过本机私有环境设置，不发送到聊天、不写进版本库�
 bash scripts/native-wake.sh
 ```
 
-启动脚本设置原生模式，并将未设置的外部后端开关默认为关闭。如果环境已经启用小智、OpenClaw（包括旧别名）、OpenAI、QwenPaw 或 HTTP API，会报错停止，避免隐式接管。麦克风输入必须开启。
+启动脚本设置原生模式，并将未设置的外部后端开关默认为关闭。命令行、旧检查命令和容器共用启动入口；开关统一接受 `1/true/yes/on`（忽略大小写和首尾空白），进入运行时后规范化为 `1/0`。如果环境已经启用小智、OpenClaw（包括旧别名）、OpenAI、QwenPaw 或 HTTP API，会报错停止，避免隐式接管。麦克风输入必须开启。
 
-此命令会安装完整上游构建依赖、生成关键词、启动 Bridge 并监听 Client；不自行安装音箱端 Client，也不刷固件。当前尚未执行此启动步骤。
+此命令先通过 uv 同步完整上游构建依赖，再由 `main.py` 检查配置与模型、原子生成词表、同步加载 KWS/VAD，最后启动 Bridge 并监听 Client；不自行安装音箱端 Client，也不刷固件。当前尚未执行此启动步骤。
 
-容器仍沿用上游构建，设 `CONFIG_PATH=/app/config.native-wake.py`、`NATIVE_WAKE_ENABLE=1`、`AUDIO_INPUT_ENABLE=1`、`OPEN_XIAOAI_TOKEN` 并关闭其余后端及 API；将模型目录挂载到 `/app/core/models`。本机没有 Docker，未验证镜像构建，尚未提供标记为已验收的部署编排。
+容器需从本分支构建镜像，不能直接使用不含本地修改的上游 `latest`。镜像已包含原生配置，CMD 直接使用项目 Python 执行 `main.py`，与命令行共享准备逻辑。设 `CONFIG_PATH=/app/config.native-wake.py`、`NATIVE_WAKE_ENABLE=1`、`AUDIO_INPUT_ENABLE=1`、`OPEN_XIAOAI_TOKEN` 并关闭其余后端及 API；将模型目录挂载到 `/app/core/models`。本机没有 Docker，未验证镜像构建，尚未提供标记为已验收的部署编排。
 
 ## 修改唤醒词
 
-修改独立配置 `config.native-wake.py` 中的 `APP_CONFIG["wakeup"]["keywords"]`。专用脚本默认选择此文件，已有 `CONFIG_PATH` 则保留；直接执行 `main.py`、关键词生成或容器运行时需明确设置 `CONFIG_PATH`。上游 `config.py` 不随模式改变，也不会覆盖用户词表。关键词列表与检测文件须同步，修改后完整重启启动脚本以重新生成 `keywords.txt`；不要只依赖配置热重载。英文按上游要求使用小写。
+修改独立配置 `config.native-wake.py` 中的 `APP_CONFIG["wakeup"]["keywords"]`。原生模式的统一启动入口默认选择此文件，已有 `CONFIG_PATH` 则保留；单独执行关键词生成脚本时需明确设置 `CONFIG_PATH`。上游 `config.py` 不随模式改变，也不会覆盖用户词表。关键词列表与检测文件须同步，修改后完整重启启动脚本以重新生成 `keywords.txt`；不要只依赖配置热重载。英文按上游要求使用小写。
 
 `native_wake.cooldown_seconds` 默认 3 秒，从调用结束后开始冷却；`timeout_seconds` 默认 5 秒。一次调用仍在等待时会拒绝并发唤醒；超时不代表设备一定未执行，不自动重试。两项参数必须为有限正数。它们不能替代真实声学回声测试。
 
@@ -70,7 +70,10 @@ bash scripts/native-wake.sh
 - 原生模式绕过 `before_wakeup` 示例 hook、外部 ASR 接管、停止原生播放和 Bridge 连续对话增强。
 - KWS 复用自身的 Silero VAD 门控，不启动外部对话 VAD 线程，不预热全文 ASR，也不查询小智 OTA 或改写其设备 ID。
 - 原版 Rust 服务在 Client 连接后仍可能播放“已连接”提示；没有将其改成额外的 Agent 播报。
-- 模型加载失败应导致启动失败；软件测试用替身验证路由，不代表模型已经成功运行。
+- 模型或关键词准备失败时返回非零，且不启动设备监听；生成词表为空时保留旧词表并停止启动。原生模式退出会停止 KWS、注销输入流、取消 Python 服务任务并回收事件循环与线程。设备服务异常或意外返回会让进程失败退出。
+- 原生模式的 HTTP API 默认关闭，显式设为开启同样拒绝；本期不提供手动开启例外。外部 AI 模式保留原有 API 配置。
+- 普通外部 AI 模式仍沿用启动脚本的模型下载行为，关键词生成交给统一入口；原生模式不走该下载分支。
+- 软件测试使用声学运行时和设备传输替身，不代表真实模型或 Rust 服务生命周期已经验收。
 
 ## 验证
 
@@ -78,6 +81,7 @@ bash scripts/native-wake.sh
 
 ```bash
 python -m unittest discover -s tests -p test_native_wake.py -v
+python -m unittest discover -s tests -p test_native_startup.py -v
 python -m unittest discover -s tests -p test_wakeup_keywords.py -v
 python -m unittest discover -s tests -p test_audio_stream.py -v
 # 全量自动化 unittest（真实服务测试默认跳过）
@@ -88,16 +92,15 @@ OPENCLAW_LIVE_TEST=0 python -m unittest discover -s tests -v
 
 启动入口读取原生模式一次并传给应用；XiaoAI 使用应用设置的事件处理策略，不逐事件读取环境变量。ConfigManager 加载与重载不依赖原生模式；只有实际创建 XiaoZhi 时才初始化其身份与 OTA。
 
-2026-10-24：原生测试 12 项通过；全量 unittest 75 项加 2 项 ASR 函数检查，共 74 项通过、3 项真实服务测试跳过。Python 编译、shell 语法与 diff 检查通过。未配置静态类型检查器；编译检查不代表类型检查。
+2026-10-24：原生分流测试 12 项、启动集成测试 9 项通过；全量 unittest 84 项加 2 项 ASR 函数检查，共 83 项通过、3 项真实服务测试跳过。Python 编译、shell 语法与 diff 检查通过。未配置静态类型检查器；编译检查不代表类型检查。
 
 离线检查正确报告缺少六个 KWS/VAD 模型文件与私有 Token。完整 Bridge 构建和 Docker 镜像尚未验证。
 
-### 已知待修正项
+### 启动集成验证
 
-- 启动检查调用系统 Python，使用 Python 3.11+ 的 `hashlib.file_digest`；系统 Python 3.9.6 下已复现异常。
-- Docker 和 Python 对 `NATIVE_WAKE_ENABLE` 的大小写、空白解析不一致。
+任务 02 增加临时项目中的真实入口测试，仅替换外部声学运行时和 Rust 设备传输。覆盖系统 Python 不可用时选择项目解释器、大小写/空白开关、Dockerfile 声明的运行文件与 CMD、缺模型与无效配置、空编码不替换旧词表、模型/服务失败和 SIGTERM 清理。容器测试通过本地执行其文件与命令验证启动契约，不能替代镜像构建。
 
-测试通过不代表以上审查项已修复。
+此前的系统 Python `hashlib.file_digest` 异常、容器开关解析差异和容器遗漏原生配置已修复；真实模型推理、镜像构建和设备验收仍待完成。
 
 ### 真机验收
 

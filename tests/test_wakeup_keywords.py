@@ -37,17 +37,15 @@ class WakeupKeywordStartupTest(unittest.TestCase):
         self.assertTrue(should_run)
         self.assertEqual(reason, "")
 
-    def test_startup_entrypoints_prepare_keywords_for_openai(self):
-        start_sh = (ROOT / "scripts/start.sh").read_text(encoding="utf8")
-        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf8")
-
-        self.assertIn("OPENAI_ENABLE_VALUE", start_sh)
-        self.assertIn("QWENPAW_ENABLE_VALUE", start_sh)
-        self.assertIn('[[ "$OPENAI_ENABLE_VALUE" =~ ^(1|true|yes)$ ]]', start_sh)
-        self.assertIn('[[ "$QWENPAW_ENABLE_VALUE" =~ ^(1|true|yes)$ ]]', start_sh)
-        self.assertIn('${OPENAI_ENABLE:-}', dockerfile)
-        self.assertIn('${QWENPAW_ENABLE:-}', dockerfile)
-        self.assertIn('python core/services/audio/kws/keywords.py', dockerfile)
+    def test_keyword_generation_accepts_normalized_backend_flags(self):
+        spec = importlib.util.spec_from_file_location(
+            "kws_keywords_normalized", ROOT / "core/services/audio/kws/keywords.py",
+        )
+        keywords = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(keywords)
+        for key in ("OPENAI_ENABLE", "QWENPAW_ENABLE", "OPENCLAW_ENABLED"):
+            with self.subTest(key=key), mock.patch.dict(os.environ, {key: " TrUe "}, clear=True):
+                self.assertTrue(keywords.should_generate_keywords()[0])
 
 
 class XiaoAIWakeupKeywordTest(unittest.TestCase):

@@ -306,14 +306,17 @@ class XiaoAI:
         future.add_done_callback(_log_result)
 
     @classmethod
-    async def init_xiaoai(cls):
+    async def init_xiaoai(cls, event_loop=None):
         cls.refresh_runtime_config()
         cls.config_manager.add_reload_listener(cls.refresh_runtime_config)
         set_xiaoai(XiaoAI)
         GlobalStream.on_output_data = cls.on_output_data
         open_xiaoai_server.register_fn("on_input_data", cls.on_input_data)
         open_xiaoai_server.register_fn("on_event", cls.__on_event)
-        cls.__init_background_event_loop()
+        if event_loop is None:
+            cls.__init_background_event_loop()
+        else:
+            cls.async_loop = event_loop
         logger.info("[XiaoAI] 启动小爱音箱服务...")
         print(ASCII_BANNER)
         await open_xiaoai_server.start_server()
