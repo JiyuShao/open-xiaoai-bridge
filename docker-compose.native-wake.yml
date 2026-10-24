@@ -1,0 +1,37 @@
+# 静默验证专用：仅本机回环地址，不连接真实音箱或外部 AI。
+name: xiaoai-lixiang-wake-test
+services:
+  bridge:
+    image: xiaoai-native-wake:validation
+    build: .
+    container_name: xiaoai-lixiang-wake-test
+    environment:
+      OPEN_XIAOAI_TOKEN: ${OPEN_XIAOAI_TOKEN:?请在服务器私有环境中设置 Token}
+      NATIVE_WAKE_ENABLE: '1'
+      AUDIO_INPUT_ENABLE: '1'
+      API_SERVER_ENABLE: '0'
+      XIAOZHI_ENABLE: '0'
+      OPENCLAW_ENABLE: '0'
+      OPENCLAW_ENABLED: '0'
+      OPENAI_ENABLE: '0'
+      QWENPAW_ENABLE: '0'
+      CONFIG_PATH: /app/config.native-wake.py
+    volumes:
+      - ${NATIVE_WAKE_MODELS:-./core/models}:/app/core/models
+      - ./config.native-wake.py:/app/config.native-wake.py:ro
+    ports:
+      - '127.0.0.1:14399:4399'
+    networks: [validation]
+    restart: 'no'
+    cpus: 2
+    mem_limit: 2g
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '2'
+networks:
+  validation:
+    internal: true

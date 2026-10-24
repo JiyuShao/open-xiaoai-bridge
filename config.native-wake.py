@@ -1,7 +1,7 @@
 """原生唤醒配置，通过 CONFIG_PATH 显式选择；独立于上游 config.py。"""
 
 APP_CONFIG = {
-    "wakeup": {"keywords": ["你好管家"]},
+    "wakeup": {"keywords": ["理想同学"]},
     "native_wake": {
         "cooldown_seconds": 3.0,
         "timeout_seconds": 5.0,

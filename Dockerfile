@@ -7,17 +7,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl build-essential pkg-config patchelf cmake libportaudio2 portaudio19-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# 安装 Rust
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+# 使用固定版本工具链，避免构建期间通过脚本下载浮动的 stable。
+COPY --from=rust:1.90-slim /usr/local/cargo /usr/local/cargo
+COPY --from=rust:1.90-slim /usr/local/rustup /usr/local/rustup
+ENV CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup
+ENV PATH=/usr/local/cargo/bin:$PATH
 
-# 安装 uv
-COPY --from=ghcr.io/astral-sh/uv:0.7 /uv /uvx /bin/
-
-# 设置环境变量
-ENV BASH_ENV=/root/.bash_env
-RUN touch "$BASH_ENV"
-RUN echo '. "$BASH_ENV"' >> "$HOME/.bashrc"
-RUN echo '[ -s "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"' >> "$BASH_ENV"
+# 固定 uv 版本；从 PyPI 安装，避免额外依赖 GHCR 镜像拉取。
+RUN pip install --no-cache-dir uv==0.7.22
 
 # 设置工作目录
 WORKDIR /app
@@ -29,7 +26,9 @@ COPY . .
 RUN uv sync --locked --no-install-project --no-editable
 
 # 构建 Rust 扩展并安装
-RUN uv run maturin build --release --manifest-path native/Cargo.toml && uv remove maturin
+RUN uv run --no-sync maturin build --locked --release --manifest-path native/Cargo.toml \
+    && uv pip install --no-deps target/wheels/*.whl \
+    && uv pip uninstall maturin
 
 
 FROM python:3.12-slim

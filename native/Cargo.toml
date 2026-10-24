@@ -13,7 +13,7 @@ pyo3-async-runtimes = { version = "0.24", features = [
     "attributes",
     "tokio-runtime",
 ] }
-open-xiaoai = { git = "https://github.com/coderzc/open-xiaoai.git", branch = "main" }
+open-xiaoai = { git = "https://github.com/coderzc/open-xiaoai.git", rev = "14e1034ba75698be7d3f331b9822b7043deaf032" }
 tokio = { version = "1.32.0", features = ["full"] }
 tokio-tungstenite = "0.26.2"
 serde = { version = "1.0", features = ["derive"] }

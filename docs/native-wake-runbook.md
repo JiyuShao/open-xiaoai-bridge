@@ -2,9 +2,9 @@
 
 ## 当前状态
 
-本地分支 `feature/native-wake` 已实现 `NATIVE_WAKE_ENABLE=1` 独立模式。默认新词是“你好管家”，命中后只调用 `SpeakerManager.wake_up(awake=True, silent=False)`。等原生反馈后再说指令。原厂词继续由设备处理。
+本地分支 `feature/native-wake` 已实现 `NATIVE_WAKE_ENABLE=1` 独立模式。默认新词是用户确认的“理想同学”，命中后只调用 `SpeakerManager.wake_up(awake=True, silent=False)`。等原生反馈后再说指令。原厂词继续由设备处理。
 
-已完成软件替身测试，未完成真实模型推理、完整 Bridge 构建、服务器部署或音箱验收。没有刷机或安装 Client。
+已完成软件替身测试、Docker 镜像构建，以及两轮真实 KWS/VAD + 假 Client 静默验证。用户确认的新词为“理想同学”；合成阳性音频每轮触发 1 次，阴性音频每轮 0 次。尚未完成真人录音或音箱验收，没有刷机或安装 Client。
 
 ## 部署前准备
 
@@ -16,13 +16,13 @@
 | 当前固件 | 用户确认 LX06 当前版本为 **1.94.13**；与上游列出的 LX06 补丁版本一致，尚未验证本机安装与恢复 |
 | 硬件修订、分区及备用系统 | 待确认 |
 | SSH / Client / 改造历史 | 用户确认未刷机、未开启 SSH、未安装 Client；尚未访问设备 |
-| 部署目标 | 用户现有 Docker 服务器（不使用 PVE）；系统、架构、Docker/Compose 版本、资源和访问方式待确认 |
+| 部署目标 | 用户现有 Docker 服务器（不使用 PVE）；iStoreOS 24.10.5、x86_64、4 核、约 16 GB 内存，Docker 27.3.1 / Compose v2.39.1，SSH 已验证 |
 | 本地开发 | macOS，uv 可用；隔离测试 Python 3.12.13 |
-| 本地 Docker | shell PATH 未检测到，未验证镜像构建 |
-| KWS/VAD 模型 | 六个必需模型文件尚未准备 |
+| 本地 Docker | shell PATH 未检测到；镜像已在目标服务器构建并运行 |
+| KWS/VAD 模型 | 配套包中六个 KWS/VAD 文件已提取并记录 SHA256；不挂载全文 ASR 模型 |
 | Git | 独立 fork，本地分支 `feature/native-wake` |
 
-设备端需从补丁固件与 SSH/Client 安装条件开始准备。下一步确认可恢复的原厂备份、备用系统与刷机工具，同时确认现有 Docker 服务器的部署信息。固件版本一致仅解决版本匹配的一项条件，不代表已具备刷机条件。
+设备端需从补丁固件与 SSH/Client 安装条件开始准备。下一步确认可恢复的原厂备份、备用系统与刷机工具，服务器验证可独立进行。固件版本一致仅解决版本匹配的一项条件，不代表已具备刷机条件。
 
 Bridge 基线为 `a1f77a888f601c1536a14494d30c959cbf7a54e4`，保存在本仓 Git 历史。Client 候选版本为 `coderzc/open-xiaoai@14e1034ba75698be7d3f331b9822b7043deaf032`；二进制与本机兼容性待验证。
 
@@ -55,9 +55,9 @@ bash scripts/native-wake.sh
 
 启动脚本设置原生模式，并将未设置的外部后端开关默认为关闭。命令行、旧检查命令和容器共用启动入口；开关统一接受 `1/true/yes/on`（忽略大小写和首尾空白），进入运行时后规范化为 `1/0`。如果环境已经启用小智、OpenClaw（包括旧别名）、OpenAI、QwenPaw 或 HTTP API，会报错停止，避免隐式接管。麦克风输入必须开启。
 
-此命令先通过 uv 同步完整上游构建依赖，再由 `main.py` 检查配置与模型、原子生成词表、同步加载 KWS/VAD，最后启动 Bridge 并监听 Client；不自行安装音箱端 Client，也不刷固件。当前尚未执行此启动步骤。
+此命令先通过 uv 同步完整上游构建依赖，再由 `main.py` 检查配置与模型、原子生成词表、同步加载 KWS/VAD，最后启动 Bridge 并监听 Client；不自行安装音箱端 Client，也不刷固件。本次通过容器 CMD 执行同一 `main.py` 启动链，未在宿主机安装 Python/Rust 运行环境。
 
-容器需从本分支构建镜像，不能直接使用不含本地修改的上游 `latest`。镜像已包含原生配置，CMD 直接使用项目 Python 执行 `main.py`，与命令行共享准备逻辑。设 `CONFIG_PATH=/app/config.native-wake.py`、`NATIVE_WAKE_ENABLE=1`、`AUDIO_INPUT_ENABLE=1`、`OPEN_XIAOAI_TOKEN` 并关闭其余后端及 API；将模型目录挂载到 `/app/core/models`。本机没有 Docker，未验证镜像构建，尚未提供标记为已验收的部署编排。
+容器需从本分支构建镜像，不能直接使用不含本地修改的上游 `latest`。镜像已包含原生配置，CMD 直接使用项目 Python 执行 `main.py`，与命令行共享准备逻辑。设 `CONFIG_PATH=/app/config.native-wake.py`、`NATIVE_WAKE_ENABLE=1`、`AUDIO_INPUT_ENABLE=1`、`OPEN_XIAOAI_TOKEN` 并关闭其余后端及 API；将模型目录挂载到 `/app/core/models`。静默验证使用 `docker-compose.native-wake.yml`，仅绑定回环端口、禁止外连、关闭自动重启。真实设备部署须另行配置允许音箱访问的地址和访问控制。
 
 ## 修改唤醒词
 
@@ -73,7 +73,7 @@ bash scripts/native-wake.sh
 - 模型或关键词准备失败时返回非零，且不启动设备监听；生成词表为空时保留旧词表并停止启动。原生模式退出会停止 KWS、注销输入流、取消 Python 服务任务并回收事件循环与线程。设备服务异常或意外返回会让进程失败退出。
 - 原生模式的 HTTP API 默认关闭，显式设为开启同样拒绝；本期不提供手动开启例外。外部 AI 模式保留原有 API 配置。
 - 普通外部 AI 模式仍沿用启动脚本的模型下载行为，关键词生成交给统一入口；原生模式不走该下载分支。
-- 软件测试使用声学运行时和设备传输替身，不代表真实模型或 Rust 服务生命周期已经验收。
+- 离线单元测试使用声学运行时和设备传输替身；服务器集成验证使用真实模型与 Rust 服务，仅 Client 为替身，不能代替真机验收。
 
 ## 验证
 
@@ -94,13 +94,13 @@ OPENCLAW_LIVE_TEST=0 python -m unittest discover -s tests -v
 
 2026-10-24：原生分流测试 12 项、启动集成测试 9 项通过；全量 unittest 84 项加 2 项 ASR 函数检查，共 83 项通过、3 项真实服务测试跳过。Python 编译、shell 语法与 diff 检查通过。未配置静态类型检查器；编译检查不代表类型检查。
 
-离线检查正确报告缺少六个 KWS/VAD 模型文件与私有 Token。完整 Bridge 构建和 Docker 镜像尚未验证。
+此前本机缺模型与 Token 的失败检查已通过；本次服务器六个模型摘要检查通过，完整 Bridge 镜像已构建并运行。
 
 ### 启动集成验证
 
 任务 02 增加临时项目中的真实入口测试，仅替换外部声学运行时和 Rust 设备传输。覆盖系统 Python 不可用时选择项目解释器、大小写/空白开关、Dockerfile 声明的运行文件与 CMD、缺模型与无效配置、空编码不替换旧词表、模型/服务失败和 SIGTERM 清理。容器测试通过本地执行其文件与命令验证启动契约，不能替代镜像构建。
 
-此前的系统 Python `hashlib.file_digest` 异常、容器开关解析差异和容器遗漏原生配置已修复；真实模型推理、镜像构建和设备验收仍待完成。
+此前的系统 Python `hashlib.file_digest` 异常、容器开关解析差异和容器遗漏原生配置已修复。真实模型推理和镜像构建现已验证；设备验收仍待完成。
 
 ### 真机验收
 
@@ -122,3 +122,53 @@ OPENCLAW_LIVE_TEST=0 python -m unittest discover -s tests -v
 4. 用户对具体设备操作步骤的授权。
 
 当前没有执行音箱安装、OTA、固件写入或启动分区切换。
+
+## Docker 服务器静默验证（任务 04）
+
+服务器工作目录为 `/mnt/data/xiaoai-native-wake/`，源码在其 `source/` 下，六个模型在 `models/` 下。使用 Docker 数据盘，避免占用约 1.9 GB 的系统分区；未修改现有容器或路由配置。`validation.env` 权限为 600，Token 在服务器生成，不写入 Git。源文件和测试音频不含凭据。
+
+验证容器名为 `xiaoai-lixiang-wake-test`（小爱音箱的“理想同学”唤醒测试）。
+
+编排限制：端口 `127.0.0.1:14399`、独立 internal 网络、2 核 / 2 GB 内存、无自动重启、日志轮换。该编排用于无真机验证。默认重启策略为 `no`，避免异常时循环启动；手动停止与重启如下，均在服务器源码目录执行：
+
+```bash
+docker compose --env-file ../validation.env -f docker-compose.native-wake.yml build
+docker compose --env-file ../validation.env -f docker-compose.native-wake.yml run --rm --no-deps bridge /app/.venv/bin/python main.py --check
+docker compose --env-file ../validation.env -f docker-compose.native-wake.yml up -d
+docker compose --env-file ../validation.env -f docker-compose.native-wake.yml stop
+docker compose --env-file ../validation.env -f docker-compose.native-wake.yml start
+```
+
+镜像使用 Python 3.12、Rust 1.90 工具链，Python 依赖由 `uv.lock` 锁定，Rust 依赖使用已有 `Cargo.lock` 并以 `--locked` 构建，其中 `open-xiaoai` Git 依赖固定为上述 Client 候选提交。uv 固定为 0.7.22；基础镜像标签仍可能更新，不要把不同时间重新构建的镜像视为相同制品，验收须记录实际镜像 ID。
+
+模型来源：[Bridge 配套发布包](https://github.com/coderzc/open-xiaoai-bridge/releases/download/vad-kws-asr-models/models.zip)。该发布地址可变，以以下摘要识别本次文件。服务器只上传六个文件；全文 ASR 未部署。官方新版中英 KWS 使用拼音词表，不能直接替换当前 `cjkchar+bpe` 模型。模型挂载目录需允许容器用户写入生成的 `keywords.txt`；本次上传保留 Mac UID，已将专属 `models/` 目录所有者修正为服务器 root（UID 0），无需增加容器权限。
+
+| 文件 | SHA256 |
+| --- | --- |
+| models.zip（本地下载缓存） | `8e8a709d6ea011f644f3c5055f536d5e6eb363eeafba53cc3232398fd636d273` |
+| silero_vad.onnx | `2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f` |
+| encoder.onnx | `f559f422d970323e0c266aaa3c56cf6d1a3a4bc0c0822124727686c1e43e9447` |
+| decoder.onnx | `2e3b5ec371f8899ee6acd829fd753ba45772df57a91bdf37cde3136354e7db7d` |
+| joiner.onnx | `1ed689c5ed19dbaa725d9d191bb4822b5f4855a39e1ffd28cbc1f340d25b2ee0` |
+| tokens.txt | `a8e0e4ec53810e433789b54a5c0134a7eaa2ffca595a6334d54c00da858841d3` |
+| bpe.model | `bcae393dbc5611be5ffa4c7ae0841558978a5a4f484008cb9dff3a2cc97ebe01` |
+
+`tests/native_wake_runtime.py` 是按需执行的集成验证工具，不属于默认离线测试。输入必须是非空、16 kHz、单声道、16 bit PCM WAV；先验证无 Token 和错误 Token 均被拒绝，再分别发送阴性与阳性音频，期待 0 / 1 次原生唤醒 RPC。假 Client 从不执行收到的 shell 命令，连接提示同样仅应答，因而不会播放声音。Token 从环境读取；在 Bridge 容器中执行可直接继承其环境，切勿手工回显。
+
+把脚本和两段音频复制到验证容器的 `/tmp/` 后运行：
+
+```bash
+docker exec -e PYTHONPATH=/app xiaoai-lixiang-wake-test /app/.venv/bin/python /tmp/native_wake_runtime.py --uri ws://127.0.0.1:4399 --negative /tmp/negative.wav --positive /tmp/positive.wav
+```
+
+本次音频由 macOS Tingting 语音合成为文件：阳性“理想同学”（16,782 帧），阴性“今天阳光很好，我准备出门散步，晚上回来吃饭。”（81,817 帧）。未调用播放器。合成音频用于验证推理与传输链路，不能代替真人发音、远场麦克风、播放回声或真实音箱验收。
+
+服务器直连部分依赖源缓慢，本次构建使用临时回环 SSH 下载通道；运行时不继承该代理，服务器全局网络配置未改变。重新构建需具备可用的 Docker/PyPI/crates.io/GitHub 下载链路；已有镜像启动不需要下载依赖。
+
+### 本次实测结果
+
+2026-10-24：镜像 ID 为 `sha256:7250e42fe50e26627199c4d7033a04c10fdef6e183b87be819108b174ef445ca`，标签 `xiaoai-native-wake:validation`。实际版本：Python 3.12.15、onnxruntime 1.23.2、sherpa-onnx 1.12.28、websockets 16.0。六个模型的服务器摘要与上述表格一致，真实模型成功加载，日志确认检测到“理想同学”。
+
+首轮与停止/重启后第二轮结果一致：缺 Token / 错 Token 均返回 401；阴性合成语音 0 次唤醒 RPC，阳性合成语音 1 次。原生请求由假 Client 应答成功，不代表音箱已经唤醒；未执行收到的任何 shell 请求，也未播放连接提示。停止时退出码 0，未发生 OOM。
+
+实际核验回环端口、internal 网络、2 核 / 2 GB 上限及 `restart=no` 均生效，运行环境不含临时构建代理。一次空闲采样约 244 MiB 内存。容器当前保持运行，临时构建下载通道已关闭，失败构建的临时容器已清理，原有容器继续运行。源码、模型与日志保留在专属数据目录；本次复测输出保存在其 `runtime-test.log`。真人录音、真机远场、原生功能共存与恢复验收仍未执行。

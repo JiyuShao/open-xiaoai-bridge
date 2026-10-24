@@ -198,7 +198,7 @@ class NativeStartupTest(unittest.TestCase):
             upstream = load_module("legacy_profile_test", "config.py")
             self.assertNotEqual(upstream.APP_CONFIG["wakeup"]["keywords"], ["你好管家"])
             native = load_module("native_profile_test", "config.native-wake.py")
-            self.assertEqual(native.APP_CONFIG["wakeup"]["keywords"], ["你好管家"])
+            self.assertEqual(native.APP_CONFIG["wakeup"]["keywords"], ["理想同学"])
 
     def test_keyword_generation_enabled_without_external_backends(self):
         with mock.patch.dict(os.environ, ENV, clear=True):
