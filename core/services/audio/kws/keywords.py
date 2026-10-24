@@ -16,6 +16,7 @@ def init_project_context():
 
 init_project_context()
 
+from core.native_wake import native_wake_enabled, validate_native_wake_environment
 from core.utils.config import ConfigManager
 from core.utils.file import get_model_file_path
 from core.utils.logger import logger
@@ -24,6 +25,10 @@ from core.utils.logger import logger
 def should_generate_keywords():
     """Return whether keyword generation should run."""
     import os
+
+    validate_native_wake_environment()
+    if native_wake_enabled():
+        return True, ""
 
     xiaozhi_enabled = os.environ.get("XIAOZHI_ENABLE", "").lower() in ("1", "true", "yes")
     # 兼容 OPENCLAW_ENABLE (新) 和 OPENCLAW_ENABLED (旧)

@@ -48,8 +48,7 @@ class ConfigManager:
         }
 
         self._initialize_client_id()
-        self._initialize_device_id()
-        self._initialize_mqtt_info()
+        self._xiaozhi_initialized = False
 
     def _load_app_config(self) -> dict[str, Any]:
         """加载 config.py 中的 APP_CONFIG。"""
@@ -99,7 +98,8 @@ class ConfigManager:
 
             self._config["DEVICE_ID"] = self.get_app_config("xiaozhi.DEVICE_ID")
             self._config["NETWORK"] = self.get_app_config("xiaozhi", {})
-            self._initialize_device_id()
+            if self._xiaozhi_initialized:
+                self._initialize_device_id()
 
             listeners = list(self._reload_listeners)
 
@@ -159,11 +159,11 @@ class ConfigManager:
         更新 config.py 文件中的特定配置项
         """
         write_file(
-            "config.py",
+            str(self._config_path),
             re.sub(
                 r'"{}"\s*:\s*"[^"]*"'.format(path),
                 f'"{path}": "{value}"',
-                read_file("config.py"),
+                read_file(str(self._config_path)),
             ),
         )
 
@@ -213,6 +213,15 @@ class ConfigManager:
                 self.update_config_file("DEVICE_ID", device_hash)
             except Exception:
                 pass
+
+    def initialize_xiaozhi(self):
+        """仅在实际使用小智时初始化其设备身份与 OTA 信息。"""
+        with self._state_lock:
+            if self._xiaozhi_initialized:
+                return
+            self._initialize_device_id()
+            self._initialize_mqtt_info()
+            self._xiaozhi_initialized = True
 
     def refresh_mqtt_info(self):
         """刷新 MQTT 信息"""

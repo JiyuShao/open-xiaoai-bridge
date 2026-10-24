@@ -1,3 +1,25 @@
+# xiaoai-ai
+
+第一期只在小米小爱音箱 Pro **LX06** 上增加自定义唤醒入口，后续识别、回答和技能全部继续使用原生小爱。默认保留“小爱同学”，暂以“你好管家”为新词示例。
+
+已实现独立原生唤醒的软件补丁并通过替身测试；真实模型与完整 Bridge 构建尚未验证；未连接 Docker 服务器或音箱、未安装 Client、未刷机。
+
+当前需求见 [一期 spec](.scratch/native-wake/spec.md)，部署准备、操作步骤与验证见 [运行手册](docs/native-wake-runbook.md)。
+
+## 原生唤醒模式
+
+运行条件、离线检查与启动步骤见 [运行手册](docs/native-wake-runbook.md)。`bash scripts/native-wake.sh --check` 不启动服务；条件不足会明确报错。真实设备准备和部署尚未开始。
+
+## 版本与范围
+
+项目根目录已合入 Bridge 上游源码，基于 `a1f77a888f601c1536a14494d30c959cbf7a54e4`，保留完整上游历史；`upstream` 指向 [coderzc/open-xiaoai-bridge](https://github.com/coderzc/open-xiaoai-bridge)。`origin` 指向 [JiyuShao/open-xiaoai-bridge](https://github.com/JiyuShao/open-xiaoai-bridge)，使用 SSH 地址；当前开发分支为 `feature/native-wake`。上游 158 个提交已完整拉取，保留本项目的 Agent 配置，开发提交仅保存在本地，尚未推送。
+
+`pyproject.toml`、`uv.lock` 和 Rust 构建配置沿用上游。本地需求与 `docs/agents/` 工程配置保留。Client 候选版本为 `coderzc/open-xiaoai@14e1034ba75698be7d3f331b9822b7043deaf032`；其二进制和本机固件兼容性尚未验证。
+
+独立原生唤醒补丁已开发，设备安装及真机验收仍待实施。下方是上游使用说明，其中完整 AI 桥接部署不等于本项目一期的已验证配置。
+
+---
+
 <div align="center">
 
 # Open-XiaoAI Bridge

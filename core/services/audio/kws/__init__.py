@@ -47,6 +47,8 @@ class _KWS:
         self.apply_runtime_config()
 
     def start(self):
+        # 在调用线程加载模型，让启动错误直接失败，避免后台线程静默退出。
+        SherpaOnnx.start()
         self.audio = MyAudio.create()
         self.stream = self.audio.open(
             format=AudioConfig.FORMAT,
@@ -78,7 +80,6 @@ class _KWS:
         self.paused = False
 
     def _detection_loop(self):
-        SherpaOnnx.start()
         self.stream.start_stream()
         while True:
             # 读取缓冲区音频数据
@@ -155,10 +156,12 @@ class _KWS:
                         SherpaOnnx.reset()
 
     def on_message(self, text: str):
-        loop = get_app().loop if get_app() else get_xiaoai().async_loop
+        app = get_app()
+        loop = app.loop if app else get_xiaoai().async_loop
+        dispatch = app.handle_wakeup if app else EventManager.wakeup
         logger.debug(f"[KWS] Dispatch wakeup event: {text}")
         future = asyncio.run_coroutine_threadsafe(
-            EventManager.wakeup(text, "kws"),
+            dispatch(text, "kws"),
             loop,
         )
 

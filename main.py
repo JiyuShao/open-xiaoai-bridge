@@ -22,6 +22,11 @@ if sys.platform in ("darwin", "linux"):
     except ImportError:
         pass
 
+from core.native_wake import native_wake_enabled, validate_native_wake_environment
+
+enable_native_wake = native_wake_enabled()
+validate_native_wake_environment(enabled=enable_native_wake)
+
 from core.utils.config_loader import ensure_config_module_loaded
 
 config_path = ensure_config_module_loaded()
@@ -74,7 +79,10 @@ def setup_config():
 
     # 打印模块启用情况
     logger.info("[Main] 模块启用情况:")
-    logger.info("小爱指令拦截器启用", module="Main")
+    logger.info(
+        "原生唤醒模式启用（不拦截原生命令）" if enable_native_wake else "小爱指令拦截器启用",
+        module="Main",
+    )
     logger.info(
         f"小智 AI Bridge: {'启用' if enable_xiaozhi else '禁用'}",
         module="Main",
@@ -111,6 +119,7 @@ def run_services(xiaozhi_mode: bool = False):
         enable_openclaw=enable_openclaw,
         enable_openai=enable_openai,
         enable_qwenpaw=enable_qwenpaw,
+        enable_native_wake=enable_native_wake,
     )
     main_app_instance.run(enable_api_server=enable_api_server)
 

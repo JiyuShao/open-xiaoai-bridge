@@ -24,6 +24,7 @@ ASCII_BANNER = """
 
 
 class XiaoAI:
+    intercept_native_commands = True
     speaker = SpeakerManager()
     async_loop: asyncio.AbstractEventLoop = None
     config_manager = ConfigManager.instance()
@@ -144,6 +145,12 @@ class XiaoAI:
 
         # 记录所有事件用于调试监听退出
         logger.debug(f"[XiaoAI] 📡 收到事件: {event_type} | 数据: {event_data}")
+
+        if not cls.intercept_native_commands:
+            # 原生系统自行处理全部指令；不拦截 ASR、不停播放、不增强连续对话。
+            if event_type == "playing" and isinstance(event_data, str):
+                cls.speaker.status = event_data.lower()
+            return
 
         if event_type == "instruction":
             if not isinstance(event_data, dict):

@@ -14,9 +14,10 @@ import os
 import threading
 import time
 
+from core.native_wake import NativeWakeController
 from core.xiaozhi import XiaoZhi
 from core.xiaoai import XiaoAI
-from core.ref import set_xiaozhi, set_app
+from core.ref import get_speaker, set_xiaozhi, set_app
 from core.utils.config import ConfigManager
 from core.utils.logger import logger
 from core.services.protocols.typing import (
@@ -41,6 +42,7 @@ class MainApp:
         enable_openclaw: bool = False,
         enable_openai: bool = False,
         enable_qwenpaw: bool = False,
+        enable_native_wake: bool = False,
     ):
         """Get singleton instance.
 
@@ -55,6 +57,7 @@ class MainApp:
                 enable_openclaw=enable_openclaw,
                 enable_openai=enable_openai,
                 enable_qwenpaw=enable_qwenpaw,
+                enable_native_wake=enable_native_wake,
             )
         return cls._instance
 
@@ -64,6 +67,7 @@ class MainApp:
         enable_openclaw: bool = False,
         enable_openai: bool = False,
         enable_qwenpaw: bool = False,
+        enable_native_wake: bool = False,
     ):
         """Initialize the main application.
 
@@ -74,10 +78,17 @@ class MainApp:
         """
         if MainApp._instance is not None:
             raise Exception("MainApp is singleton, use instance() to get instance")
+        self._enable_native_wake = enable_native_wake
+        if self._enable_native_wake and any((
+            enable_xiaozhi, enable_openclaw, enable_openai, enable_qwenpaw,
+        )):
+            raise ValueError("原生唤醒模式不能启用外部 AI 后端")
+
         MainApp._instance = self
 
         # Config
         self.config = ConfigManager.instance()
+        self._native_wake = NativeWakeController(self.config) if enable_native_wake else None
 
         # Feature flags
         self._enable_xiaozhi = enable_xiaozhi
@@ -114,7 +125,15 @@ class MainApp:
         self.api_server = None
         self._enable_api_server = False
 
+        XiaoAI.intercept_native_commands = not enable_native_wake
         set_app(self)
+
+    async def handle_wakeup(self, text: str, source: str):
+        """在进入外部对话会话前，统一分流关键词事件。"""
+        if self._native_wake is not None:
+            return await self._native_wake.wakeup(get_speaker(), text, source)
+        from core.wakeup_session import EventManager
+        return await EventManager.wakeup(text, source)
 
     @property
     def protocol(self):
@@ -129,6 +148,10 @@ class MainApp:
         Args:
             enable_api_server: Whether to start the HTTP API Server
         """
+        if self._enable_native_wake and enable_api_server:
+            raise ValueError("原生唤醒模式不启用 HTTP API")
+        if self._enable_native_wake and not os.environ.get("OPEN_XIAOAI_TOKEN", "").strip():
+            raise ValueError("原生唤醒模式需要设置 OPEN_XIAOAI_TOKEN")
         self._enable_api_server = enable_api_server
 
         # Check audio input status
@@ -136,6 +159,9 @@ class MainApp:
             "AUDIO_INPUT_ENABLE", "true"
         ).strip().lower() in ("true", "1", "yes", "on")
         
+        if not audio_input_enabled and self._enable_native_wake:
+            raise ValueError("原生唤醒模式需要 AUDIO_INPUT_ENABLE=1")
+
         if not audio_input_enabled and self._enable_xiaozhi:
             raise RuntimeError(
                 "Audio input is disabled (AUDIO_INPUT_ENABLE=false) but XiaoZhi is enabled. "
@@ -215,7 +241,8 @@ class MainApp:
 
         # Start audio services
         if (
-            self._enable_xiaozhi
+            self._enable_native_wake
+            or self._enable_xiaozhi
             or self._enable_openclaw
             or self._enable_openai
             or self._enable_qwenpaw
@@ -226,11 +253,13 @@ class MainApp:
                 "AUDIO_INPUT_ENABLE", "true"
             ).strip().lower() in ("true", "1", "yes", "on")
             if audio_input_enabled:
-                from core.services.audio.vad import VAD
                 from core.services.audio.kws import KWS
-                VAD.start()
+                if not self._enable_native_wake:
+                    from core.services.audio.vad import VAD
+                    VAD.start()
+                # KWS 内部已含 Silero 门控；原生模式无需独立 VAD 会话线程。
                 KWS.start()
-                logger.info("[MainApp] Audio input enabled (VAD/KWS started)")
+                logger.info("[MainApp] Audio input enabled (KWS started)")
             else:
                 logger.info("[MainApp] Audio input disabled (VAD/KWS not started)")
 

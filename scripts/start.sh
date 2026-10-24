@@ -26,6 +26,12 @@ OPENCLAW_ENABLE_VALUE=$(printf '%s' "${OPENCLAW_ENABLE:-${OPENCLAW_ENABLED:-}}" 
 OPENAI_ENABLE_VALUE=$(printf '%s' "${OPENAI_ENABLE:-}" | tr '[:upper:]' '[:lower:]')
 QWENPAW_ENABLE_VALUE=$(printf '%s' "${QWENPAW_ENABLE:-}" | tr '[:upper:]' '[:lower:]')
 
+# 原生模式只使用预先准备好的 KWS/VAD 模型，不下载包含全文 ASR 的整包。
+NATIVE_WAKE_ENABLE_VALUE=$(printf '%s' "${NATIVE_WAKE_ENABLE:-}" | tr '[:upper:]' '[:lower:]')
+if [[ "$NATIVE_WAKE_ENABLE_VALUE" =~ ^(1|true|yes)$ ]]; then
+    python3 scripts/check_native_wake.py
+fi
+
 # 1. 检查 uv
 if ! command -v uv &> /dev/null; then
     echo -e "${RED}错误: 未找到 uv 命令${NC}"
@@ -52,7 +58,7 @@ ONNX_LIB_DIR="$(uv run python -c "from pathlib import Path; import onnxruntime; 
     export DYLD_LIBRARY_PATH="${ONNX_LIB_DIR}${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 
 # 3. 检查 KWS 相关模型和关键词文件
-if [[ "$XIAOZHI_ENABLED" =~ ^(1|true|yes)$ ]] || [[ "$OPENCLAW_ENABLE_VALUE" =~ ^(1|true|yes)$ ]] || [[ "$OPENAI_ENABLE_VALUE" =~ ^(1|true|yes)$ ]] || [[ "$QWENPAW_ENABLE_VALUE" =~ ^(1|true|yes)$ ]]; then
+if [[ "$NATIVE_WAKE_ENABLE_VALUE" =~ ^(1|true|yes)$ ]] || [[ "$XIAOZHI_ENABLED" =~ ^(1|true|yes)$ ]] || [[ "$OPENCLAW_ENABLE_VALUE" =~ ^(1|true|yes)$ ]] || [[ "$OPENAI_ENABLE_VALUE" =~ ^(1|true|yes)$ ]] || [[ "$QWENPAW_ENABLE_VALUE" =~ ^(1|true|yes)$ ]]; then
     MODEL_DIR="core/models"
     REQUIRED_MODELS=("silero_vad.onnx" "encoder.onnx" "decoder.onnx" "joiner.onnx" "tokens.txt" "bpe.model")
     MISSING_MODELS=()
@@ -64,7 +70,7 @@ if [[ "$XIAOZHI_ENABLED" =~ ^(1|true|yes)$ ]] || [[ "$OPENCLAW_ENABLE_VALUE" =~ 
     done
 
     # Check ASR model directory (sherpa-onnx-sense-voice-*)
-    if ! ls "$MODEL_DIR"/sherpa-onnx-sense-voice-*/model.int8.onnx &>/dev/null; then
+    if [[ ! "$NATIVE_WAKE_ENABLE_VALUE" =~ ^(1|true|yes)$ ]] && ! ls "$MODEL_DIR"/sherpa-onnx-sense-voice-*/model.int8.onnx &>/dev/null; then
         MISSING_MODELS+=("sherpa-onnx-sense-voice-*/model.int8.onnx")
     fi
 
@@ -145,7 +151,8 @@ else
     echo -e "${YELLOW}⚠ 小智、OpenClaw、OpenAI 和 QwenPaw 均未启用，跳过模型检查和关键词预生成${NC}"
 fi
 
-# 4. 检查配置
+# 4. 检查配置（原生模式不需要第三方 TTS）
+if [[ ! "$NATIVE_WAKE_ENABLE_VALUE" =~ ^(1|true|yes)$ ]]; then
 echo ""
 echo "检查配置..."
 
@@ -186,6 +193,7 @@ if errors:
 else:
     print('✓ 豆包 TTS 已配置')
 " 2>/dev/null || echo -e "${YELLOW}⚠ 配置检查失败${NC}"
+fi
 
 echo ""
 echo -e "${GREEN}========================================${NC}"

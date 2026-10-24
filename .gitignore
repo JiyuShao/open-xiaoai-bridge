@@ -48,3 +48,15 @@ output/
 config-local.py
 
 **/models
+
+# Local project and audit artifacts
+.cache/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.env
+.env.*
+!.env.example
+.DS_Store

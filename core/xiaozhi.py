@@ -68,6 +68,7 @@ class XiaoZhi:
         XiaoZhi._instance = self
 
         self.config = ConfigManager.instance()
+        self.config.initialize_xiaozhi()
 
         # Protocol
         self.protocol = None
