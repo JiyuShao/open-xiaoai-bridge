@@ -1,3 +1,4 @@
+import threading
 import uuid
 from typing import Any, Callable, ClassVar, Optional
 
@@ -49,6 +50,8 @@ class MyStream:
 
         self.input_bytes = bytearray()
         self._read_offset = 0
+        # 录音数据到达时唤醒读者，避免消费者用 sleep 轮询（轮询会逐帧累积延迟）
+        self._input_cond = threading.Condition()
 
         if start:
             self.start_stream()
@@ -67,8 +70,9 @@ class MyStream:
         which makes read() skip freshly-arrived audio until the buffer refills
         past the stale offset — corrupting every capture after the first.
         """
-        self.input_bytes.clear()
-        self._read_offset = 0
+        with self._input_cond:
+            self.input_bytes.clear()
+            self._read_offset = 0
 
     def start_stream(self) -> None:
         if not self._is_active:
@@ -82,6 +86,8 @@ class MyStream:
             if self._is_input:
                 GlobalStream.unregister_reader(self)
                 self.clear_input()
+                with self._input_cond:
+                    self._input_cond.notify_all()
 
     def write(self, frames: bytes) -> None:
         # 发送输出音频流到扬声器
@@ -95,7 +101,46 @@ class MyStream:
             return
 
         if len(data) > 0:
-            self.input_bytes.extend(data)
+            with self._input_cond:
+                self.input_bytes.extend(data)
+                self._input_cond.notify_all()
+
+    @property
+    def pending_bytes(self) -> int:
+        """尚未被读走的字节数。"""
+        return len(self.input_bytes) - self._read_offset
+
+    def wait_input(self, num_frames: int, timeout: float = 0.05) -> bool:
+        """阻塞等待至少 num_frames 帧可读；超时或数据流已停止返回 False。"""
+        need = num_frames * 2
+        with self._input_cond:
+            if not self._is_active:
+                return False
+            return self._input_cond.wait_for(
+                lambda: not self._is_active or self.pending_bytes >= need,
+                timeout,
+            )
+
+    def trim_input(self, max_bytes: int, frame_bytes: int = 1024) -> int:
+        """丢弃最旧的积压数据，只保留最近 max_bytes；返回丢弃的字节数。
+
+        积压意味着检测落后于实时；与其让延迟一直累积，不如丢掉旧音频。
+        丢弃长度按整帧对齐，避免把一帧从中间切开。
+        """
+        if frame_bytes <= 0:
+            return 0
+        with self._input_cond:
+            pending = self.pending_bytes
+            if pending <= max_bytes:
+                return 0
+            drop = ((pending - max_bytes) // frame_bytes) * frame_bytes
+            if drop <= 0:
+                return 0
+            self._read_offset += drop
+            if self._read_offset > 262144:
+                del self.input_bytes[:self._read_offset]
+                self._read_offset = 0
+            return drop
 
     def read(self, num_frames=None, exception_on_overflow=False) -> bytes:
         if num_frames is None:

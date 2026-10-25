@@ -1,7 +1,7 @@
 # 第一期：自定义唤醒词唤起原生小爱
 
 Status: ready-for-agent
-Execution: server-validated; offline-device-preparation-done; physical-evidence-and-device-validation-pending
+Execution: server-validated; offline-device-preparation-done; device-installed; core-acceptance-passed; playback-and-baseline-cases-pending
 Scope: 仅改变唤醒入口，保留原生业务处理；设备安装尚未开始。
 
 ## Problem Statement
@@ -27,7 +27,7 @@ Scope: 仅改变唤醒入口，保留原生业务处理；设备安装尚未开�
 
 ## Implementation Decisions
 
-- 在服务器侧做关键词检测，音箱 Client 提供音频和设备指令通道。用户已确认使用现有 Docker 服务器，不使用 PVE；已在 iStoreOS x86_64 / Docker 27.3.1 验证，真机接入网络仍待设备 IP 确定。
+- 在服务器侧做关键词检测，音箱 Client 提供音频和设备指令通道。用户已确认使用现有 Docker 服务器，不使用 PVE；已在 iStoreOS x86_64 / Docker 27.3.1 验证，真机经 `192.168.1.2:4399` 接入。
 - 识别到自定义关键词后，只调用已有原生唤醒能力，把后续指令交回原生流程。调用返回成功不代替用户听到唤醒反馈和原生完成指令的证据。
 - 将关键词检测启动、关键词模型准备与外部 AI 后端开关解耦；所有外部后端保持关闭，不通过虚假启用后端来启动检测。
 - 配置必要的关键词/VAD 模型；不为一期安装本地全文 ASR 模型或自定义 TTS。
@@ -49,6 +49,8 @@ Scope: 仅改变唤醒入口，保留原生业务处理；设备安装尚未开�
 
 ## Further Notes
 
-用户照片已确认 LX06，用户确认当前固件为 1.94.13；用户确认未刷机、未开启 SSH、未安装 Client；硬件分区、恢复条件与部署主机仍待确认，尚未安装或实测。拆机、刷机、分区和启动项变更仍须具体授权。
+用户照片已确认 LX06，改造前固件为 1.94.13；已在本机读取真实分区并保留四份转储，`system1`/`boot1` 保持官方原版作为回退槽。2026-10-25 经用户点名授权写入补丁 `system0`、切换 `boot_part boot0` 并安装 Client；真机首轮验收通过，默认 SSH 密码按用户决定保留。后续播放中唤醒、远场与逐项原生功能对照仍待完成，详见[运行手册](../../docs/native-wake-runbook.md#2026-10-25-真机安装与一期验收)。
+
+远场/语速识别率已排查：离线回放与线上命中一致后可确认，参数、预卷、增益与模型替换都未超过当前基线，现有模型是限制项。若后续要提升，需真人标注数据后微调 KWS 模型或改用更强的检测方式；详见[调参结论](../../docs/native-wake-runbook.md#识别率排查与调参结论2026-10-25)。
 
 运行条件、部署准备、验证与恢复步骤统一见 [运行手册](../../docs/native-wake-runbook.md)。
