@@ -503,6 +503,31 @@ Bridge 的 TTS provider 配置跟随各个后端，配置层级保持不变：
 
 ## 🔌 OpenAI 兼容服务
 
+### 小爱豆包静默文字验证
+
+新增测试入口复用 OpenAI 兼容通道，只连接当前进程创建的回环 Mock 服务，
+不接受真实服务地址或 API Key，不启动 Bridge，不加载音箱和 TTS 模块。
+使用 Python 3.12+，文字入口仅需 `aiohttp` 和 `requests`：
+
+```bash
+python3 -m scripts.doubao_text_chat --message "你好" --state .cache/doubao-test/sessions.sqlite3
+python3 -m scripts.doubao_text_chat --message "继续聊" --state .cache/doubao-test/sessions.sqlite3
+python3 -m scripts.doubao_text_chat --message "新的话题" --new-session --state .cache/doubao-test/sessions.sqlite3
+```
+
+日志中的 `evidence=mock`、回复、历史消息数和请求次数用于检查文字闭环。
+`--mock-failure` 可选 `empty`、`http-error`、`timeout`、`unavailable`，验证失败后恢复；
+失败不会加入历史，也不会自动重发。`hardware_loaded` 正常应为 `false`。
+
+测试配置中的 `xiaoai-doubao` / “小爱豆包”仅是本地测试身份，未创建或切换真实 Hermes profile。
+真实 Hermes 的 profile、工具隔离、记忆协议和模型效果仍待独立验证。
+当前入口无语音合成、工具执行或唤醒词检测；这些由后续任务实现。
+
+OpenAI 兼容通道可选配置 `openai.history_path`，将聊天上下文保存到 SQLite；未配置时沿用内存历史。
+持久化保留最近 `history_max_messages` 条消息（测试配置为 20 条），以客户端历史为上下文来源；
+`await OpenAIManager.start_new_session()` 会同时清空上下文并更换远端会话标识。
+原有同步 `reset_session()` 仅用于内存模式，持久化模式需使用异步入口。
+
 用于接入 Hermes Agent API Server、OpenAI、Ollama、LM Studio 等兼容 OpenAI Chat Completions 的服务。它是独立后端，不依赖 OpenClaw 协议。
 
 设置 `OPENAI_ENABLE=1` 启用。

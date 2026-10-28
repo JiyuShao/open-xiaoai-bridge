@@ -10,6 +10,7 @@ from typing import Any
 
 import aiohttp
 
+from core.services.chat_sessions import ChatSessions
 from core.utils.base import get_env
 from core.utils.config import ConfigManager
 from core.utils.logger import logger
@@ -44,9 +45,11 @@ class OpenAIManager:
     _rule_prompt = ""
     _rule_prompt_for_skill = ""
     _sessions: dict[str, list[dict[str, str]]] = {}
+    _history_store: ChatSessions | None = None
     _response_events: dict[str, asyncio.Future] = {}
     _response_texts: dict[str, str] = {}
     _response_tts_speakers: dict[str, str | None] = {}
+    _response_tasks: dict[str, asyncio.Task] = {}
     last_error: str | None = None
 
     @classmethod
@@ -85,6 +88,8 @@ class OpenAIManager:
         cls._system_prompt = str(config.get("system_prompt", "") or "")
         cls._timeout = int(config.get("response_timeout", 120))
         cls._history_max_messages = max(0, int(config.get("history_max_messages", 20)))
+        history_path = config.get("history_path")
+        cls._history_store = ChatSessions(history_path) if history_path else None
         cls._temperature = cls._optional_float(config.get("temperature"))
         cls._max_tokens = cls._optional_int(config.get("max_tokens"))
         cls._extra_body = config.get("extra_body", {})
@@ -137,6 +142,11 @@ class OpenAIManager:
     @classmethod
     async def close(cls):
         """Cancel pending response waiters."""
+        tasks = list(cls._response_tasks.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        cls._response_tasks.clear()
         for waiter in list(cls._response_events.values()):
             if not waiter.done():
                 waiter.cancel()
@@ -163,7 +173,17 @@ class OpenAIManager:
 
     @classmethod
     def reset_session(cls, session_key: str | None = None):
+        if cls._history_store:
+            raise RuntimeError("持久化会话请使用 await start_new_session()")
         cls._sessions.pop(session_key or cls._session_key, None)
+
+    @classmethod
+    async def start_new_session(cls, session_key: str | None = None):
+        """清除当前上下文，并隔离远端旧会话的记忆。"""
+        key = session_key or cls._session_key
+        if cls._history_store:
+            await cls._history_store.reset(key)
+        cls._sessions.pop(key, None)
 
     @classmethod
     def get_tts_speaker_for_session_key(cls, session_key: str | None = None) -> str | None:
@@ -211,9 +231,11 @@ class OpenAIManager:
 
     @classmethod
     async def _send_and_track(cls, text: str) -> str | None:
+        cls.last_error = None
         if not cls._initialized:
             cls.initialize_from_config()
         if not cls._enabled:
+            cls.last_error = "backend_disabled"
             logger.warning("[OpenAI] send called but backend is disabled")
             return None
 
@@ -223,7 +245,7 @@ class OpenAIManager:
         cls._response_texts[run_id] = ""
         cls._response_tts_speakers[run_id] = cls.get_tts_speaker_for_session_key()
         logger.user_speech(text, module=f"OpenAI({cls._session_key})")
-        asyncio.create_task(cls._run_chat_completion(run_id, text))
+        cls._response_tasks[run_id] = asyncio.create_task(cls._run_chat_completion(run_id, text))
         return run_id
 
     @classmethod
@@ -236,11 +258,17 @@ class OpenAIManager:
             await asyncio.wait_for(event, timeout=cls._timeout)
             return cls._response_texts.pop(run_id, "") or None
         except asyncio.TimeoutError:
+            cls.last_error = "TimeoutError"
             logger.warning(f"[OpenAI] Timeout waiting for response (runId: {run_id})")
             return None
         finally:
             cls._response_events.pop(run_id, None)
             cls._response_texts.pop(run_id, None)
+            task = cls._response_tasks.pop(run_id, None)
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
     @classmethod
     async def _run_chat_completion(cls, run_id: str, text: str):
@@ -249,8 +277,11 @@ class OpenAIManager:
             if response_text:
                 cls._response_texts[run_id] = response_text
                 logger.ai_response(response_text, module=f"OpenAI({cls._session_key})")
+            else:
+                cls.last_error = "empty_response"
         except Exception as exc:
-            cls.last_error = f"{type(exc).__name__}: {exc}"
+            # 服务错误正文可能包含凭据或用户内容，不进入日志。
+            cls.last_error = type(exc).__name__
             logger.error(f"[OpenAI] Chat completion failed: {cls.last_error}")
         finally:
             waiter = cls._response_events.get(run_id)
@@ -260,7 +291,9 @@ class OpenAIManager:
     @classmethod
     async def _request_chat_completion(cls, text: str) -> str | None:
         session_key = cls._session_key
-        history = cls._sessions.setdefault(session_key, [])
+        store = cls._history_store
+        saved = await store.load(session_key) if store else None
+        history = list(saved.messages) if saved else cls._sessions.setdefault(session_key, [])
         messages = cls._build_messages(history, text)
         payload: dict[str, Any] = {
             "model": cls._model,
@@ -273,7 +306,7 @@ class OpenAIManager:
         if cls._max_tokens is not None:
             payload["max_tokens"] = cls._max_tokens
 
-        headers = cls._headers()
+        headers = cls._headers(saved.remote_key if saved else session_key)
 
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=cls._timeout)
@@ -285,16 +318,17 @@ class OpenAIManager:
             ) as response:
                 body = await response.json(content_type=None)
                 if response.status >= 400:
-                    message = body.get("error", body) if isinstance(body, dict) else body
-                    raise RuntimeError(f"HTTP {response.status}: {message}")
+                    raise RuntimeError(f"Chat completion HTTP {response.status}")
 
         response_text = cls._extract_response_text(body)
         if response_text:
             cls._append_history(history, text, response_text)
+            if store and saved:
+                await store.save(saved, history)
         return response_text
 
     @classmethod
-    def _headers(cls) -> dict[str, str]:
+    def _headers(cls, session_key: str | None = None) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if cls._api_key:
             headers["Authorization"] = f"Bearer {cls._api_key}"
@@ -302,8 +336,9 @@ class OpenAIManager:
         # X-Hermes-Session-Key). chat/completions stays stateless — the
         # messages array is still the source of turn history — so this does
         # not duplicate context.
-        if cls._session_header and cls._session_key:
-            headers[cls._session_header] = cls._session_key
+        target_session = cls._session_key if session_key is None else session_key
+        if cls._session_header and target_session:
+            headers[cls._session_header] = target_session
         return headers
 
     @classmethod
@@ -339,7 +374,7 @@ class OpenAIManager:
         if not isinstance(body, dict):
             return None
         choices = body.get("choices")
-        if not choices:
+        if not isinstance(choices, list) or not choices:
             return None
         first = choices[0]
         if not isinstance(first, dict):
