@@ -42,7 +42,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /app/.venv /app/.venv
 COPY main.py .
-COPY config.py config.native-wake.py ./
+COPY config.py config.native-wake.py config.mixed-wake.py ./
 COPY core ./core
 COPY scripts ./scripts
 

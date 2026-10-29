@@ -16,16 +16,18 @@ MODEL_FILES = (
 
 
 def main():
-    from core.native_wake import native_wake_enabled, validate_native_wake_environment
+    from core.wake_mode import resolve_wake_mode, validate_wake_environment, validate_mixed_config
     from core.utils.config_loader import get_config_path, load_config_module
 
     errors = []
     try:
-        validate_native_wake_environment()
+        mode = resolve_wake_mode()
+        validate_wake_environment(mode)
     except ValueError as exc:
         errors.append(str(exc))
-    if not native_wake_enabled():
-        errors.append("需要 NATIVE_WAKE_ENABLE=1")
+        mode = "legacy"
+    if mode == "legacy":
+        errors.append("需要 WAKE_MODE=native 或 mixed（旧 NATIVE_WAKE_ENABLE=1 仍兼容）")
     if not os.environ.get("OPEN_XIAOAI_TOKEN", "").strip():
         errors.append("需要设置 OPEN_XIAOAI_TOKEN，并在 Client 使用相同值")
     config_path = get_config_path()
@@ -50,8 +52,18 @@ def main():
             value = float(native.get(key, default))
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"native_wake.{key} 必须是有限正数")
+        if mode == "mixed":
+            validate_mixed_config(config)
     except (ValueError, TypeError, AttributeError):
         errors.append("配置无效: APP_CONFIG 需包含非空小写 wakeup.keywords 词表，native_wake 冷却和超时需为有限正数")
+        if mode == "mixed":
+            errors.append("混合配置需包含完整 native/openai 路由、xiaoai-doubao profile、持久化历史、有效 Hermes URL 和本地 SenseVoice ASR")
+    if mode == "mixed" and isinstance(config, dict) and not errors:
+        asr_config = config.get("asr", {})
+        model_name = "model.int8.onnx" if asr_config.get("int8", True) else "model.onnx"
+        candidates = [ROOT / "core/models" / asr_config["model_dir"]] if asr_config.get("model_dir") else list((ROOT / "core/models").glob("*sense-voice*"))
+        if not any(all((folder / name).is_file() and (folder / name).stat().st_size for name in (model_name, "tokens.txt")) for folder in candidates):
+            errors.append("缺少本地 SenseVoice ASR 模型和 tokens.txt")
     for name in MODEL_FILES:
         path = ROOT / "core/models" / name
         if not path.is_file() or path.stat().st_size == 0:
@@ -73,4 +85,6 @@ def main():
 
 if __name__ == "__main__":
     # 保留原检查命令，但解释器选择与默认配置交给统一启动脚本。
-    os.execvp("bash", ["bash", str(ROOT / "scripts/native-wake.sh"), "--check"])
+    from core.wake_mode import resolve_wake_mode
+    script = "mixed-wake.sh" if resolve_wake_mode() == "mixed" else "native-wake.sh"
+    os.execvp("bash", ["bash", str(ROOT / "scripts" / script), "--check"])

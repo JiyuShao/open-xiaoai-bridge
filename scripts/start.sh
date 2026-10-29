@@ -56,8 +56,11 @@ fi
 # 原生模式的规则、检查和关键词准备均由命令行/容器共用的入口负责。
 STARTUP_ENABLE_VALUES=$(uv run --no-sync python -c '
 from core.utils.base import get_env_bool
-keys = ("NATIVE_WAKE_ENABLE", "XIAOZHI_ENABLE", "OPENCLAW_ENABLE", "OPENAI_ENABLE", "QWENPAW_ENABLE")
-print(" ".join(str(int(get_env_bool(key, alias="OPENCLAW_ENABLED" if key == "OPENCLAW_ENABLE" else None))) for key in keys))
+from core.wake_mode import resolve_wake_mode, validate_wake_environment
+mode = resolve_wake_mode()
+validate_wake_environment(mode)
+keys = ("XIAOZHI_ENABLE", "OPENCLAW_ENABLE", "OPENAI_ENABLE", "QWENPAW_ENABLE")
+print(str(int(mode != "legacy")) + " " + " ".join(str(int(get_env_bool(key, alias="OPENCLAW_ENABLED" if key == "OPENCLAW_ENABLE" else None))) for key in keys))
 ')
 read -r NATIVE_WAKE_ENABLE_VALUE XIAOZHI_ENABLED OPENCLAW_ENABLE_VALUE OPENAI_ENABLE_VALUE QWENPAW_ENABLE_VALUE <<< "$STARTUP_ENABLE_VALUES"
 if [[ "$NATIVE_WAKE_ENABLE_VALUE" == "1" ]]; then

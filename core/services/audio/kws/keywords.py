@@ -18,7 +18,7 @@ def init_project_context():
 
 init_project_context()
 
-from core.native_wake import native_wake_enabled, validate_native_wake_environment
+from core.wake_mode import resolve_wake_mode, validate_wake_environment
 from core.utils.base import get_env_bool
 from core.utils.config import ConfigManager
 from core.utils.file import get_model_file_path
@@ -29,8 +29,9 @@ def should_generate_keywords():
     """Return whether keyword generation should run."""
     import os
 
-    validate_native_wake_environment()
-    if native_wake_enabled():
+    mode = resolve_wake_mode()
+    validate_wake_environment(mode)
+    if mode in ("native", "mixed"):
         return True, ""
 
     xiaozhi_enabled = get_env_bool("XIAOZHI_ENABLE")

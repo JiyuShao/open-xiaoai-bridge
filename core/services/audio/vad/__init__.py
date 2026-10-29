@@ -3,7 +3,7 @@ import time
 
 from core.ref import set_vad
 from core.services.audio.stream import MyAudio
-from core.services.audio.vad.silero import Silero
+from core.services.audio.vad.silero import SileroDetector
 from core.services.protocols.typing import AudioConfig
 from core.utils.config import ConfigManager
 from core.utils.logger import logger
@@ -23,11 +23,13 @@ class _VAD:
         self.min_silence_duration = 500
 
         # 状态变量
+        self._running = False
         self.paused = True
         self.thread = None
         self.speech_count = 0
         self.silence_count = 0
 
+        self.detector = None
         self.audio = None
         self.stream = None
 
@@ -61,18 +63,32 @@ class _VAD:
         """启动VAD检测器"""
         logger.vad_event("语音活动检测服务启动", f"最小语音时长={self.min_speech_duration}ms, 最小静音时长={self.min_silence_duration}ms, 阈值={self.threshold}")
         
-        self._initialize_audio_stream()
+        # KWS 与会话 VAD 可同时监听，各自持有循环模型状态。
+        self.detector = SileroDetector()
+        if not self._initialize_audio_stream():
+            self._close_audio_stream()
+            raise RuntimeError("无法初始化 VAD 音频流")
 
         # 启动检测线程
         self.paused = False
+        self._running = True
         self.thread = threading.Thread(target=self._detection_loop, daemon=True)
         self.thread.start()
+
+    def stop(self):
+        """释放混合模式持有的检测线程和输入 reader。"""
+        self._running = False
+        self.paused = True
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=1)
+        self._close_audio_stream()
 
     def pause(self):
         """暂停VAD检测"""
         self.paused = True
         self._reset_state()
-        self.stream.stop_stream()
+        if self.stream:
+            self.stream.stop_stream()
 
     def resume(self, target: str):
         """恢复VAD检测"""
@@ -167,7 +183,7 @@ class _VAD:
 
     def _detection_loop(self):
         """VAD检测主循环"""
-        while True:
+        while self._running:
             # 如果暂停或者音频流未初始化，则跳过
             if self.paused or not self.stream:
                 time.sleep(0.1)
@@ -180,7 +196,7 @@ class _VAD:
                 continue
 
             # 检测是否是语音
-            speech_prob = Silero.vad(frames, self.sample_rate) or 0
+            speech_prob = self.detector.vad(frames, self.sample_rate) or 0
             is_speech = speech_prob >= self.threshold
             if is_speech:
                 self._handle_speech_frame(frames)

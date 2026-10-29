@@ -20,7 +20,7 @@ import os
 
 import open_xiaoai_server
 
-from core.ref import get_speaker, get_vad
+from core.ref import get_kws, get_speaker, get_vad
 from core.utils.config import ConfigManager
 
 _NOTIFY_SOUND_PATH = os.path.join(
@@ -78,6 +78,8 @@ class ExternalConversationController:
             raise RuntimeError("MANAGER must be set by subclass")
         self.backend = self.MANAGER
         self.active = False
+        self.keep_kws_while_listening = False
+        self.is_listening = False
 
         # Per-session asyncio.Future used to receive VAD events
         self._vad_future: asyncio.Future | None = None
@@ -316,7 +318,8 @@ class ExternalConversationController:
         """
         from core.wakeup_session import EventManager
 
-        self._vad_future = self._loop.create_future()
+        future = self._loop.create_future()
+        self._vad_future = future
         recording_frames: list[bytes] = []
         is_recording = False
 
@@ -337,10 +340,12 @@ class ExternalConversationController:
             nonlocal is_recording
             is_recording = False
             logger.debug("VAD detected silence, stop recording", module=self.LOG_MODULE)
-            if self._vad_future and not self._vad_future.done():
-                self._loop.call_soon_threadsafe(
-                    self._vad_future.set_result, b"".join(recording_frames)
-                )
+            speech = b"".join(recording_frames)
+            def deliver():
+                # 唤醒切换可能先取消 Future，须在所属循环内检查状态。
+                if not future.done():
+                    future.set_result(speech)
+            self._loop.call_soon_threadsafe(deliver)
 
         # Tap into VAD's audio stream to record frames while waiting for silence
         _orig_handle_speech = vad._handle_speech_frame
@@ -361,9 +366,13 @@ class ExternalConversationController:
         vad._handle_speech_frame = _recording_speech_frame
         vad._handle_silence_frame = _recording_silence_frame
 
+        kws = get_kws() if self.keep_kws_while_listening else None
         try:
             vad.resume("speech")
-            result = await asyncio.wait_for(self._vad_future, timeout=self.timeout)
+            self.is_listening = True
+            if kws:
+                kws.resume()
+            result = await asyncio.wait_for(future, timeout=self.timeout)
             return result
 
         except asyncio.TimeoutError:
@@ -372,6 +381,9 @@ class ExternalConversationController:
             return None
 
         finally:
+            self.is_listening = False
+            if kws:
+                kws.pause()
             EventManager.on_speech = original_on_speech
             EventManager.on_silence = original_on_silence
             vad._handle_speech_frame = _orig_handle_speech

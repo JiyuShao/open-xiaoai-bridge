@@ -4,13 +4,13 @@ import os
 import threading
 import time
 from collections import deque
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 
 from core.ref import get_app, get_xiaoai, get_xiaozhi, set_kws
 from core.services.audio.kws.sherpa import SherpaOnnx
-from core.services.audio.stream import MyAudio
+from core.services.audio.stream import MyAudio, MyStream
 from core.services.audio.vad.silero import Silero
 from core.services.protocols.typing import AudioConfig, DeviceState
 from core.utils.config import ConfigManager
@@ -49,11 +49,12 @@ class _HighPassFilter:
 
 
 class _KWS:
-    def __init__(self):
+    def __init__(self, *, on_wakeup: Callable[[str], None] | None = None):
+        self._on_wakeup = on_wakeup
         set_kws(self)
         self._running = False
         self.thread = None
-        self.stream = None
+        self.stream: Optional[MyStream] = None
         self.audio = None
         self.config_manager = ConfigManager.instance()
         self.vad_threshold = 0.10
@@ -260,7 +261,10 @@ class _KWS:
         if not result:
             return False
         logger.wakeup(result, module="KWS")
-        self.on_message(result)
+        if self._on_wakeup is None:
+            self.on_message(result)
+        else:
+            self._on_wakeup(result)
         return True
 
     def _process_frame(self, frames) -> bool:

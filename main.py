@@ -16,11 +16,10 @@ main_app_instance = None
 
 def setup_config():
     """一次解析启动开关，并把规范值提供给 Python 子进程与 Rust。"""
-    from core.native_wake import validate_native_wake_environment
+    from core.wake_mode import resolve_wake_mode, validate_wake_environment
     from core.utils.base import get_env_bool
 
     names = {
-        "enable_native_wake": "NATIVE_WAKE_ENABLE",
         "enable_xiaozhi": "XIAOZHI_ENABLE",
         "enable_openclaw": "OPENCLAW_ENABLE",
         "enable_openai": "OPENAI_ENABLE",
@@ -30,20 +29,26 @@ def setup_config():
     # 显式的新开关优先；仅新开关为空时使用上游旧别名。
     if not os.environ.get("OPENCLAW_ENABLE"):
         os.environ["OPENCLAW_ENABLE"] = os.environ.get("OPENCLAW_ENABLED", "0")
+    mode = resolve_wake_mode()
+    validate_wake_environment(mode)
     flags = {name: get_env_bool(key) for name, key in names.items()}
-    validate_native_wake_environment(enabled=flags["enable_native_wake"])
+    flags["enable_native_wake"] = mode == "native"
+    flags["enable_mixed_wake"] = mode == "mixed"
+    os.environ["WAKE_MODE"] = mode
     for name, key in names.items():
         os.environ[key] = "1" if flags[name] else "0"
     os.environ["AUDIO_INPUT_ENABLE"] = "1" if get_env_bool("AUDIO_INPUT_ENABLE", True) else "0"
     if flags["enable_native_wake"] and not os.environ.get("CONFIG_PATH"):
         os.environ["CONFIG_PATH"] = str(ROOT / "config.native-wake.py")
+    if flags["enable_mixed_wake"] and not os.environ.get("CONFIG_PATH"):
+        os.environ["CONFIG_PATH"] = str(ROOT / "config.mixed-wake.py")
     logger.info("[Main] 启用模块: " + ", ".join(name for name, enabled in flags.items() if enabled))
     return flags
 
 
 def prepare_startup(flags, *, check_only=False):
     """检查原生模式的文件和配置；实际启动前重新生成词表。"""
-    if flags["enable_native_wake"] or check_only:
+    if flags["enable_native_wake"] or flags["enable_mixed_wake"] or check_only:
         from scripts.check_native_wake import main as check_native_wake
         if check_native_wake() != 0:
             raise ValueError("原生唤醒启动检查未通过")
@@ -51,7 +56,7 @@ def prepare_startup(flags, *, check_only=False):
         return
     setup_library_path()
     if any(flags[key] for key in (
-        "enable_native_wake", "enable_xiaozhi", "enable_openclaw",
+        "enable_native_wake", "enable_mixed_wake", "enable_xiaozhi", "enable_openclaw",
         "enable_openai", "enable_qwenpaw",
     )):
         subprocess.run(

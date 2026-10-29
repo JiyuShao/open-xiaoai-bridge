@@ -22,6 +22,7 @@ class WakeupSessionManager:
         self._openai_task: asyncio.Task | None = None
         self._qwenpaw_controller = None
         self._qwenpaw_task: asyncio.Task | None = None
+        self._mixed_transition = asyncio.Lock()
         self._xiaozhi_future: asyncio.Future | None = None
 
     def _get_loop(self):
@@ -127,6 +128,74 @@ class WakeupSessionManager:
                     is_vad_begin=is_vad_begin,
                 )
         return False
+
+    async def wakeup_mixed(self, text, source, native_wake) -> bool:
+        """只串行短暂的路由切换；对话任务仍由本管理器持有。"""
+        routes = self.config.get_app_config("wakeup.routes", {})
+        if source != "kws" or text not in routes:
+            return False
+        async with self._mixed_transition:
+            if self._openai_task and not self._openai_task.done():
+                if routes[text] == "openai" or not self._openai_controller.is_listening:
+                    return False
+            await self._stop_mixed_conversation()
+            if routes[text] == "native":
+                return await native_wake.wakeup(get_speaker(), text, source)
+            await self.reset_all_sessions()
+            from core.openai import OpenAIManager
+            from core.openai_conversation import OpenAIConversationController
+            OpenAIManager.set_session_key(self.config.get_app_config("openai.session_key"))
+            controller = OpenAIConversationController()
+            controller.keep_kws_while_listening = True
+            self._openai_controller = controller
+            self._openai_task = asyncio.create_task(self._run_mixed_conversation(controller))
+            return True
+
+    async def _run_mixed_conversation(self, controller):
+        kws = get_kws()
+        if kws:
+            kws.pause()
+        try:
+            await controller.start()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(f"[Wakeup] 混合会话失败: {type(exc).__name__}")
+        finally:
+            controller.stop()
+            from core.ref import get_vad
+            vad = get_vad()
+            if vad:
+                vad.pause()
+            # 包括在提示音/TTS 关麦期间取消的情况。
+            import open_xiaoai_server
+            try:
+                await open_xiaoai_server.start_recording()
+            except Exception as exc:
+                logger.warning(f"[Wakeup] 恢复录音失败: {type(exc).__name__}")
+            finally:
+                if self._openai_controller is controller:
+                    self._openai_controller = None
+                    self._openai_task = None
+                if kws:
+                    kws.resume()
+
+    async def _stop_mixed_conversation(self):
+        task = self._openai_task
+        if task and not task.done():
+            self._openai_controller.stop()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self._openai_controller = None
+        self._openai_task = None
+
+    async def interrupt_mixed(self):
+        """原厂唤醒事件的中断入口，不替原厂重新发送一次唤醒。"""
+        async with self._mixed_transition:
+            if not self._openai_task or self._openai_task.done():
+                return
+            await self._stop_mixed_conversation()
+            await self._stop_device_playback()
 
     async def wakeup(self, text, source):
         before_wakeup = self.config.get_app_config("wakeup.before_wakeup")

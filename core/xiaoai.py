@@ -5,7 +5,7 @@ import time
 import numpy as np
 import open_xiaoai_server
 
-from core.ref import get_speaker, set_xiaoai
+from core.ref import get_app, get_speaker, set_xiaoai
 from core.services.audio.stream import GlobalStream
 from core.services.speaker import SpeakerManager
 from core.wakeup_session import EventManager
@@ -147,7 +147,24 @@ class XiaoAI:
         logger.debug(f"[XiaoAI] 📡 收到事件: {event_type} | 数据: {event_data}")
 
         if not cls.intercept_native_commands:
-            # 原生系统自行处理全部指令；不拦截 ASR、不停播放、不增强连续对话。
+            # 混合模式仅观察原厂唤醒标记；原生 ASR/业务仍由音箱自行处理。
+            app = get_app()
+            if app and getattr(app, "_enable_mixed_wake", False) and event_type == "instruction" and isinstance(event_data, dict):
+                raw = event_data.get("NewLine")
+                line = json_decode(raw) if isinstance(raw, str) else raw
+                if isinstance(line, dict):
+                    header, payload = line.get("header"), line.get("payload")
+                    if isinstance(header, dict) and isinstance(payload, dict) and (
+                        header.get("namespace") == "SpeechRecognizer"
+                        and header.get("name") == "RecognizeResult"
+                        and payload.get("is_vad_begin") is False
+                    ):
+                        results = payload.get("results") or []
+                        first = results[0] if isinstance(results, list) and results else {}
+                        text = first.get("text", "") if isinstance(first, dict) else first
+                        if text == "":
+                            await EventManager.interrupt_mixed()
+            # 原生系统自行处理全部指令；不拦截 ASR、不增强连续对话。
             if event_type == "playing" and isinstance(event_data, str):
                 cls.speaker.status = event_data.lower()
             return

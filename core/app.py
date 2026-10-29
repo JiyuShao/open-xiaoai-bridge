@@ -17,7 +17,7 @@ import time
 from core.native_wake import NativeWakeController
 from core.xiaozhi import XiaoZhi
 from core.xiaoai import XiaoAI
-from core.ref import get_kws, get_speaker, set_xiaozhi, set_app
+from core.ref import get_kws, get_vad, get_speaker, set_xiaozhi, set_app
 from core.utils.config import ConfigManager
 from core.utils.logger import logger
 from core.services.protocols.typing import (
@@ -43,6 +43,7 @@ class MainApp:
         enable_openai: bool = False,
         enable_qwenpaw: bool = False,
         enable_native_wake: bool = False,
+        enable_mixed_wake: bool = False,
     ):
         """Get singleton instance.
 
@@ -58,6 +59,7 @@ class MainApp:
                 enable_openai=enable_openai,
                 enable_qwenpaw=enable_qwenpaw,
                 enable_native_wake=enable_native_wake,
+                enable_mixed_wake=enable_mixed_wake,
             )
         return cls._instance
 
@@ -68,6 +70,7 @@ class MainApp:
         enable_openai: bool = False,
         enable_qwenpaw: bool = False,
         enable_native_wake: bool = False,
+        enable_mixed_wake: bool = False,
     ):
         """Initialize the main application.
 
@@ -84,11 +87,18 @@ class MainApp:
         )):
             raise ValueError("原生唤醒模式不能启用外部 AI 后端")
 
-        MainApp._instance = self
-
-        # Config
+        self._enable_mixed_wake = enable_mixed_wake
+        if enable_mixed_wake and (enable_native_wake or not enable_openai or any((
+            enable_xiaozhi, enable_openclaw, enable_qwenpaw,
+        ))):
+            raise ValueError("混合唤醒仅支持原生与 OpenAI-compatible 后端")
+        # 校验先于单例发布与设备连接，失败后仍可修正配置重新创建。
         self.config = ConfigManager.instance()
-        self._native_wake = NativeWakeController(self.config) if enable_native_wake else None
+        if enable_mixed_wake:
+            from core.wake_mode import validate_mixed_config
+            validate_mixed_config(self.config.get_app_config())
+        self._native_wake = NativeWakeController(self.config) if enable_native_wake or enable_mixed_wake else None
+        MainApp._instance = self
 
         # Feature flags
         self._enable_xiaozhi = enable_xiaozhi
@@ -127,11 +137,14 @@ class MainApp:
         self.api_server = None
         self._enable_api_server = False
 
-        XiaoAI.intercept_native_commands = not enable_native_wake
+        XiaoAI.intercept_native_commands = not (enable_native_wake or enable_mixed_wake)
         set_app(self)
 
     async def handle_wakeup(self, text: str, source: str):
         """在进入外部对话会话前，统一分流关键词事件。"""
+        if self._enable_mixed_wake:
+            from core.wakeup_session import EventManager
+            return await EventManager.wakeup_mixed(text, source, self._native_wake)
         if self._native_wake is not None:
             return await self._native_wake.wakeup(get_speaker(), text, source)
         from core.wakeup_session import EventManager
@@ -160,7 +173,7 @@ class MainApp:
         """
         if self._enable_native_wake and enable_api_server:
             raise ValueError("原生唤醒模式不启用 HTTP API")
-        if self._enable_native_wake and not os.environ.get("OPEN_XIAOAI_TOKEN", "").strip():
+        if (self._enable_native_wake or self._enable_mixed_wake) and not os.environ.get("OPEN_XIAOAI_TOKEN", "").strip():
             raise ValueError("原生唤醒模式需要设置 OPEN_XIAOAI_TOKEN")
         self._enable_api_server = enable_api_server
 
@@ -169,7 +182,7 @@ class MainApp:
             "AUDIO_INPUT_ENABLE", "true"
         ).strip().lower() in ("true", "1", "yes", "on")
         
-        if not audio_input_enabled and self._enable_native_wake:
+        if not audio_input_enabled and (self._enable_native_wake or self._enable_mixed_wake):
             raise ValueError("原生唤醒模式需要 AUDIO_INPUT_ENABLE=1")
 
         if not audio_input_enabled and self._enable_xiaozhi:
@@ -205,9 +218,16 @@ class MainApp:
                     "Either enable audio input, or set input_mode='xiaoai_asr' in config."
                 )
 
-        if self._enable_native_wake:
+        if self._enable_native_wake or self._enable_mixed_wake:
             # 导入与同步模型加载均先于设备服务；失败时不开放监听。
             from core.services.audio.kws import KWS
+            if self._enable_mixed_wake:
+                from core.services.audio.asr import ASRService
+                OpenAIManager.initialize_from_config(enabled=True)
+                ASRService.ensure_loaded()
+                from core.services.audio.vad import VAD
+                VAD.start()
+                VAD.pause()
             KWS.start()
 
         # Create event loop thread
@@ -215,13 +235,14 @@ class MainApp:
         self.loop_thread.daemon = True
         self.loop_thread.start()
 
-        self._start_config_watcher()
+        if not self._enable_mixed_wake:
+            self._start_config_watcher()
 
         time.sleep(0.1)
 
         # Initialize XiaoAI service
         self._xiaoai_future = asyncio.run_coroutine_threadsafe(
-            XiaoAI.init_xiaoai(event_loop=self.loop if self._enable_native_wake else None),
+            XiaoAI.init_xiaoai(event_loop=self.loop if self._enable_native_wake or self._enable_mixed_wake else None),
             self.loop,
         )
 
@@ -239,7 +260,8 @@ class MainApp:
             OpenClawManager.initialize_from_config()
             asyncio.run_coroutine_threadsafe(OpenClawManager.connect(), self.loop)
         if self._enable_openai:
-            OpenAIManager.initialize_from_config()
+            if not self._enable_mixed_wake:
+                OpenAIManager.initialize_from_config()
             asyncio.run_coroutine_threadsafe(OpenAIManager.connect(), self.loop)
         if self._enable_qwenpaw:
             QwenPawManager.initialize_from_config()
@@ -272,18 +294,18 @@ class MainApp:
             ).strip().lower() in ("true", "1", "yes", "on")
             if audio_input_enabled:
                 from core.services.audio.kws import KWS
-                if not self._enable_native_wake:
+                if not (self._enable_native_wake or self._enable_mixed_wake):
                     from core.services.audio.vad import VAD
                     VAD.start()
                 # KWS 内部已含 Silero 门控；原生模式无需独立 VAD 会话线程。
-                if not self._enable_native_wake:
+                if not (self._enable_native_wake or self._enable_mixed_wake):
                     KWS.start()
                 logger.info("[MainApp] Audio input enabled (KWS started)")
             else:
                 logger.info("[MainApp] Audio input disabled (VAD/KWS not started)")
 
             # Pre-warm local ASR only when an enabled backend is configured to use it.
-            if audio_input_enabled and (
+            if audio_input_enabled and not self._enable_mixed_wake and (
                 (
                     self._enable_openclaw
                     and self.config.get_app_config("openclaw.input_mode", "local_asr")
@@ -427,8 +449,10 @@ class MainApp:
         self.shutdown_requested = True
         self.running = False
 
-        if self._enable_native_wake and get_kws() is not None:
+        if (self._enable_native_wake or self._enable_mixed_wake) and get_kws() is not None:
             get_kws().stop()
+        if self._enable_mixed_wake and get_vad() is not None:
+            get_vad().stop()
 
         if self.xiaozhi:
             self.xiaozhi.shutdown()
@@ -443,7 +467,7 @@ class MainApp:
             asyncio.run_coroutine_threadsafe(
                 OpenClawManager.close(), self.loop
             )
-        if self._enable_openai and OpenAIManager.is_enabled():
+        if self._enable_openai and OpenAIManager.is_enabled() and self.loop.is_running():
             asyncio.run_coroutine_threadsafe(
                 OpenAIManager.close(), self.loop
             )

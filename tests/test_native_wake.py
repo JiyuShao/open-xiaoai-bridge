@@ -48,7 +48,7 @@ def config_stub():
 
 
 @contextmanager
-def application(*, native=True, transport=None):
+def application(*, native=True, mixed=False, transport=None):
     """应用、事件、配置及音箱控制均使用真实代码，仅替换设备传输和数值运行时。"""
     from core.ref import GLOBAL_STATES, set_xiaoai
 
@@ -66,6 +66,8 @@ async def before_wakeup(speaker, text, source, app):
 APP_CONFIG = {"wakeup": {"keywords": ["你好管家"], "before_wakeup": before_wakeup},
               "native_wake": {"timeout_seconds": 0.01, "cooldown_seconds": 0.01}}
 ''')
+        if mixed:
+            path.write_text((ROOT / "config.mixed-wake.py").read_text().replace('os.environ.get("HERMES_BASE_URL", "")', '"http://127.0.0.1:1/v1"'))
         for name in list(sys.modules):
             if name.startswith("core.") and name != "core.ref":
                 sys.modules.pop(name)
@@ -75,7 +77,8 @@ APP_CONFIG = {"wakeup": {"keywords": ["你好管家"], "before_wakeup": before_w
         })
         with mock.patch.dict(os.environ, {**ENV, "CONFIG_PATH": str(path)}, clear=True):
             module = importlib.import_module("core.app")
-            app = module.MainApp(enable_xiaozhi=False, enable_native_wake=native)
+            app = module.MainApp(enable_xiaozhi=False, enable_native_wake=native and not mixed,
+                                 enable_mixed_wake=mixed, enable_openai=mixed)
             app.hook_events = []
             set_xiaoai(module.XiaoAI)
             try:

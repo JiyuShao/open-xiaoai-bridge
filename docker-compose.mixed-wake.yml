@@ -1,0 +1,36 @@
+# 混合模式离线预检示例；默认不监听端口、不调用后端或音箱。
+name: xiaoai-doubao-mixed-test
+services:
+  bridge:
+    image: xiaoai-mixed-wake:validation
+    build: .
+    command: ["/app/.venv/bin/python", "main.py", "--check"]
+    container_name: xiaoai-doubao-mixed-test
+    environment:
+      WAKE_MODE: mixed
+      OPENAI_ENABLE: '1'
+      XIAOZHI_ENABLE: '0'
+      OPENCLAW_ENABLE: '0'
+      OPENCLAW_ENABLED: '0'
+      QWENPAW_ENABLE: '0'
+      API_SERVER_ENABLE: '0'
+      AUDIO_INPUT_ENABLE: '1'
+      OPEN_XIAOAI_TOKEN: ${MIXED_TEST_TOKEN:?请设置独立测试 Token}
+      HERMES_BASE_URL: http://mock-hermes:8000/v1
+      CONFIG_PATH: /app/config.mixed-wake.py
+    volumes:
+      - ${MIXED_WAKE_MODELS:-./core/models}:/app/core/models
+      - mixed-sessions:/app/app/xiaoai
+    ports:
+      - '127.0.0.1:24399:4399'
+    networks: [validation]
+    restart: 'no'
+    cpus: 2
+    mem_limit: 3g
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+networks:
+  validation:
+    internal: true
+volumes:
+  mixed-sessions:

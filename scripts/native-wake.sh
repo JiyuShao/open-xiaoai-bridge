@@ -2,7 +2,11 @@
 # --check 只检查本地文件；不启动服务或操作音箱。
 set -euo pipefail
 cd "$(dirname "$0")/.."
-export NATIVE_WAKE_ENABLE=1
+WAKE_MODE="$(printf '%s' "${WAKE_MODE:-native}" | tr '[:upper:]' '[:lower:]' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+export WAKE_MODE
+if [[ "$WAKE_MODE" != "native" ]]; then
+    echo "native-wake.sh 仅支持 WAKE_MODE=native" >&2; exit 2
+fi
 export CONFIG_PATH="${CONFIG_PATH:-config.native-wake.py}"
 export XIAOZHI_ENABLE="${XIAOZHI_ENABLE:-0}"
 export OPENCLAW_ENABLE="${OPENCLAW_ENABLE:-0}"

@@ -22,7 +22,7 @@ class NativeStartupIntegrationTest(unittest.TestCase):
         for name in ("core", "scripts"):
             shutil.copytree(ROOT / name, self.root / name,
                             ignore=shutil.ignore_patterns("models", "__pycache__"))
-        for name in ("main.py", "config.py", "config.native-wake.py"):
+        for name in ("main.py", "config.py", "config.native-wake.py", "config.mixed-wake.py"):
             shutil.copy2(ROOT / name, self.root / name)
         models = self.root / "core/models"
         models.mkdir()
@@ -68,10 +68,23 @@ async def server():
         record("server-stop")
 
 sys.modules["numpy"] = types.SimpleNamespace(zeros=lambda *a, **k: [], float32=object())
-sys.modules["sherpa_onnx"] = types.SimpleNamespace(text2token=tokenize, KeywordSpotter=Spotter)
+def asr_model(**kwargs):
+    record("asr-model")
+    if os.environ.get("FAKE_ASR_FAIL"):
+        raise RuntimeError("bad ASR model")
+    return object()
+
+def vad_model(*args, **kwargs):
+    record("vad-model")
+    if os.environ.get("FAKE_VAD_FAIL"):
+        raise RuntimeError("bad VAD model")
+    return object()
+
+sys.modules["sherpa_onnx"] = types.SimpleNamespace(text2token=tokenize, KeywordSpotter=Spotter,
+    OfflineRecognizer=types.SimpleNamespace(from_sense_voice=asr_model))
 sys.modules["onnxruntime"] = types.SimpleNamespace(
     __file__=__file__, SessionOptions=types.SimpleNamespace,
-    InferenceSession=lambda *a, **k: object(),
+    InferenceSession=vad_model,
 )
 sys.modules["open_xiaoai_server"] = types.SimpleNamespace(
     decode_audio=lambda *a, **k: b"", register_fn=lambda *a: None, start_server=server,
@@ -95,6 +108,73 @@ def report():
             [sys.executable, "main.py", *(args or [])], cwd=self.root,
             env={**self.env, **env}, text=True, capture_output=True, timeout=10,
         )
+
+    def prepare_mixed(self):
+        self.env.pop("NATIVE_WAKE_ENABLE")
+        self.env.update(WAKE_MODE="mixed", OPENAI_ENABLE="1", HERMES_BASE_URL="http://127.0.0.1:1/v1",
+                        CONFIG_PATH=str(self.root / "config.mixed-wake.py"))
+        folder = self.root / "core/models/sherpa-onnx-sense-voice-test"
+        folder.mkdir()
+        for name in ("model.int8.onnx", "tokens.txt"):
+            (folder / name).write_bytes(b"offline fixture")
+
+    def test_mixed_rejects_invalid_routes_and_missing_resources_before_device(self):
+        self.prepare_mixed()
+        self.fake_runtime()
+        profile = self.root / "config.mixed-wake.py"
+        original = profile.read_text()
+        for source in (
+            original.replace('"豆包豆包": "openai"', '"豆包豆包": "xiaozhi"'),
+            original.replace('"keywords": ["理想同学", "豆包豆包"]', '"keywords": [["broken"]]'),
+            original.replace('"asr": {"model": "sense_voice", "int8": True}', '"asr": None'),
+        ):
+            profile.write_text(source)
+            result = self.run_entry()
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+        profile.write_text(original)
+        model = self.root / "core/models/sherpa-onnx-sense-voice-test/model.int8.onnx"
+        model.unlink()
+        result = self.run_entry()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("缺少本地 SenseVoice", result.stdout)
+        self.assertFalse(any(e["event"] == "server-start" for e in self.trace()))
+
+    def test_mixed_loads_models_before_device_and_releases_resources_on_failure(self):
+        self.prepare_mixed()
+        self.fake_runtime()
+        for key in ("FAKE_ASR_FAIL", "FAKE_VAD_FAIL", "FAKE_SERVER_FAIL"):
+            with self.subTest(key=key):
+                (self.root / "trace.jsonl").unlink(missing_ok=True)
+                result = self.run_entry(**{key: "1"})
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                events = self.trace()
+                names = [e["event"] for e in events]
+                if key != "FAKE_SERVER_FAIL":
+                    self.assertNotIn("server-start", names)
+                else:
+                    self.assertEqual(next(e["words"] for e in events if e["event"] == "keywords"),
+                                     ["理想同学", "豆包豆包"])
+                    for name in ("asr-model", "vad-model", "kws-model"):
+                        self.assertLess(names.index(name), names.index("server-start"))
+                self.assertEqual(events[-1]["threads"], ["MainThread"])
+                self.assertEqual(events[-1]["readers"], 0)
+                self.assertNotIn("Task was destroyed", result.stderr)
+
+    def test_mode_wrappers_normalize_case_and_whitespace_like_python_entry(self):
+        project_bin = self.root / ".venv/bin"
+        project_bin.mkdir(parents=True)
+        (project_bin / "python").symlink_to(sys.executable)
+        for mode in ("native", "mixed"):
+            if mode == "mixed":
+                self.prepare_mixed()
+            with self.subTest(mode=mode):
+                result = subprocess.run(
+                    ["bash", f"scripts/{mode}-wake.sh", "--check"], cwd=self.root,
+                    env={**self.env, "WAKE_MODE": f" {mode.upper()} "},
+                    text=True, capture_output=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_check_uses_the_same_mode_rules_without_loading_models(self):
         result = self.run_entry(["--check"])

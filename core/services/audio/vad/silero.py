@@ -85,7 +85,7 @@ class OnnxWrapper:
         return out
 
 
-class _Silero:
+class SileroDetector:
     def __init__(self) -> None:
         self.model = OnnxWrapper(
             path=get_model_file_path("silero_vad.onnx"),
@@ -108,4 +108,4 @@ class _Silero:
             return None
 
 
-Silero = _Silero()
+Silero = SileroDetector()
