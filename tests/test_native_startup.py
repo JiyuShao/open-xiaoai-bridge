@@ -127,6 +127,7 @@ def report():
             original.replace('"豆包豆包": "openai"', '"豆包豆包": "xiaozhi"'),
             original.replace('"keywords": ["理想同学", "豆包豆包"]', '"keywords": [["broken"]]'),
             original.replace('"asr": {"model": "sense_voice", "int8": True}', '"asr": None'),
+            original + "\nAPP_CONFIG['home_assistant']={'enabled':True,'base_url':'http://user:private@127.0.0.1','token':'private-test-token','entities':{}}\n",
         ):
             profile.write_text(source)
             result = self.run_entry()

@@ -361,7 +361,15 @@ class OpenAIManager:
             if not isinstance(call, dict) or not isinstance(call.get("id"), str) or not isinstance(call.get("function"), dict):
                 raise ValueError("工具调用格式无效")
             function = call["function"]
-            result = await tools.invoke(call["id"], function.get("name", ""), function.get("arguments", ""))
+            try:
+                result = await tools.invoke(call["id"], function.get("name", ""), function.get("arguments", ""))
+            except (ValueError, TypeError, KeyError):
+                result = {"status":"rejected","message":"工具参数或权限不满足要求，请重新确认目标和操作；没有自动重试"}
+                from core.services.native_bridge import OperationOutcome
+                async def rejected_tool():
+                    return OperationOutcome("rejected",False,error="invalid_tool_or_permission",confirmation="not_submitted")
+                await tools.bridge.run_operation("tool_rejected","工具调用被拒绝",{},rejected_tool,session_key=tools.session_key)
+                tools.outcomes.append(result)
             messages.append({"role": "assistant", "content": message.get("content"), "tool_calls": calls})
             messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result, ensure_ascii=False)})
             payload = {**payload}

@@ -38,13 +38,32 @@ async def _run(args, cleanup):
     turns = [(case, read_pcm(args.manifest.parent / case['file'])) for case in cases['turns']]
     transcriptions = {int(case['marker']): case['mock_text'] for case, _ in turns}
     events, requests = [], []
+    from scripts.silent_home_runtime import MockHomeAssistant, resolve_arguments
+    fake_home = MockHomeAssistant() if cases.get('home_assistant') is True else None
+    plans=[case for case,_ in turns if case.get('mock_text') and case['mock_text'] not in ('拜拜','再见','没事了','不用了')]
+    model_turn=-1
     install(events, transcriptions, mock_models=args.asr_mode == 'mock')
     async def response(request):
+        nonlocal model_turn
         body = await request.json()
         requests.append(body)
-        return web.json_response({'choices':[{'message':{'content':'模拟回复：' + body['messages'][-1]['content']}}]})
+        messages=body['messages']
+        if messages[-1]['role']=='user':
+            model_turn+=1
+        current=plans[model_turn] if model_turn<len(plans) else {}
+        last_user=max(index for index,message in enumerate(messages) if message['role']=='user')
+        tool_messages=[message for message in messages[last_user+1:] if message['role']=='tool']
+        planned=current.get('mock_tools',[])
+        if len(tool_messages)<len(planned):
+            selected=planned[len(tool_messages)]
+            results=[json.loads(message['content']).get('data',json.loads(message['content'])) for message in tool_messages]
+            arguments=resolve_arguments(selected['arguments'],results)
+            return web.json_response({'choices':[{'message':{'tool_calls':[{'id':f'file-{model_turn}-{len(tool_messages)}','type':'function','function':{'name':selected['name'],'arguments':json.dumps(arguments,ensure_ascii=False)}}]}}]})
+        return web.json_response({'choices':[{'message':{'content':'模拟回复：' + messages[last_user]['content']}}]})
     server = web.Application()
     server.router.add_post('/v1/chat/completions', response)
+    if fake_home:
+        server.router.add_route('*','/api/{tail:.*}',fake_home.handle)
     runner = web.AppRunner(server)
     await runner.setup()
     cleanup.push_async_callback(runner.cleanup)
@@ -76,8 +95,12 @@ async def _run(args, cleanup):
                   'openai':{'profile':'xiaoai-doubao','base_url':f'http://127.0.0.1:{port}/v1','model':'mock-hermes',
                     'session_key':'agent:xiaoai-doubao:file-test','history_path':str(args.output/'sessions.db'),
                     'response_timeout':2,'tts_provider':'doubao','tts_speaker':'zh_female_vv_uranus_bigtts',
-                    'exit_keywords':['拜拜','再见','没事了','不用了']},
+                    'tools_enabled':fake_home is not None,
+                    'exit_keywords':[]},
                   'tts':{'doubao':{'app_id':'test-only','access_key':'test-only'}}}
+        if fake_home:
+            config['home_assistant']={'enabled':True,'base_url':f'http://127.0.0.1:{port}',
+                'token':'mock-home-only','entities':fake_home.ENTITIES,'workflows_path':str(args.output/'workflows.db')}
         profile = tmp/'config.py'
         profile.write_text('APP_CONFIG = '+repr(config))
         # 此进程专用于测试；覆盖配置，绝不读取生产环境中的凭据/模型后端。
@@ -145,7 +168,14 @@ async def _run(args, cleanup):
             await OpenAIManager.close()
             await runner.cleanup()
             file_utils.get_model_file_path = original_model_path
-        result = {'evidence':'mock-models' if args.asr_mode=='mock' else 'local-models-mock-hermes-tts',
+        home_report={}
+        if fake_home:
+            from core.services.device_history import recorder_config
+            home_report={'ha_requests':fake_home.calls,'ha_rules':list(fake_home.rules.values()),
+                'rules':await app.home_assistant.workflows.list_rules(),'tasks':await app.home_assistant.tasks.list(),
+                'operations':[record.as_dict() for record in await app.native_bridge.list()],
+                'recorder_plan':recorder_config(fake_home.ENTITIES)}
+        result = {**home_report,'evidence' :'mock-models' if args.asr_mode=='mock' else 'local-models-mock-hermes-tts',
                   'transcripts':transcript_results, 'model_requests':requests,
                   'tts_requests':[e for e in events if e['kind']=='tts_play'],
                   'device_calls_executed':0, 'events':events, 'readers_after_stop':len(GlobalStream.readers),

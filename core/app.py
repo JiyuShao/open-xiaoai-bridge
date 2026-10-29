@@ -107,6 +107,8 @@ class MainApp:
         self._enable_qwenpaw = enable_qwenpaw
 
         self._native_bridge = None
+        self._home_assistant = None
+        self._home_task = None
 
         # Device state
         self.device_state = DeviceState.IDLE
@@ -151,6 +153,39 @@ class MainApp:
             return await self._native_wake.wakeup(get_speaker(), text, source)
         from core.wakeup_session import EventManager
         return await EventManager.wakeup(text, source)
+
+    @property
+    def home_assistant(self):
+        config = self.config.get_app_config("home_assistant", {})
+        if not config.get("enabled", False):
+            return None
+        if self._home_assistant is None:
+            from core.services.home_assistant import HomeAssistantClient, HomeAssistantService
+            client = HomeAssistantClient(config.get("base_url", ""), config.get("token", ""))
+            self._home_assistant = HomeAssistantService(client, config.get("entities", {}), self.native_bridge)
+            self._home_assistant.configure_workflows(config.get("workflows_path", "app/home-workflows.db"), self._announce_home)
+        return self._home_assistant
+
+    async def _announce_home(self, text):
+        """提醒统一走小爱豆包的播报链路，不给后台任务设备控制工具。"""
+        return await OpenAIManager._play_response_with_tts(text)
+
+    async def _run_home_tasks(self):
+        """由MainApp.loop托管后台任务；失败只记录，不退出到设备循环。"""
+        await self.home_assistant.tasks.recover()
+        listener = asyncio.create_task(self.home_assistant.workflows.listen_announcements())
+        try:
+            while not self.shutdown_requested:
+                try:
+                    await self.home_assistant.tasks.tick()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.error(f"定时任务失败: {type(exc).__name__}",module="HomeAssistant")
+                await asyncio.sleep(1)
+        finally:
+            listener.cancel()
+            await asyncio.gather(listener,return_exceptions=True)
 
     @property
     def native_bridge(self):
@@ -231,6 +266,9 @@ class MainApp:
                     "Either enable audio input, or set input_mode='xiaoai_asr' in config."
                 )
 
+        if self._enable_openai:
+            _ = self.home_assistant  # HA配置同步校验先于设备监听。
+
         if self._enable_native_wake or self._enable_mixed_wake:
             # 导入与同步模型加载均先于设备服务；失败时不开放监听。
             from core.services.audio.kws import KWS
@@ -279,6 +317,9 @@ class MainApp:
         if self._enable_qwenpaw:
             QwenPawManager.initialize_from_config()
             asyncio.run_coroutine_threadsafe(QwenPawManager.connect(), self.loop)
+
+        if self._enable_openai and self.home_assistant is not None:
+            self._home_task = asyncio.run_coroutine_threadsafe(self._run_home_tasks(), self.loop)
 
         # Start API Server if enabled
         if self._enable_api_server:
@@ -467,6 +508,9 @@ class MainApp:
         if self._enable_mixed_wake and get_vad() is not None:
             get_vad().stop()
 
+        if self._home_task is not None:
+            self._home_task.cancel()
+
         if self.xiaozhi:
             self.xiaozhi.shutdown()
 
@@ -504,6 +548,8 @@ class MainApp:
 
     def check_service(self):
         """设备服务异常或意外结束时，让进程失败而非空转。"""
+        if self._home_task is not None and self._home_task.done():
+            self._home_task.result()
         if self._xiaoai_future is not None and self._xiaoai_future.done():
             self._xiaoai_future.result()
             if not self.shutdown_requested:

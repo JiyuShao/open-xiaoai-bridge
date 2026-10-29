@@ -249,6 +249,7 @@ class ExternalConversationController:
         # 先发出请求（不阻塞等回复），立即播"咻"给用户即时反馈，再等回复
         # 注意：直接用 _send_and_track 而非 send(wait_response=False)，
         # 后者会立即清掉 Future，导致后续 _wait_response 拿不到回复
+        self._current_user_text = text
         response = await self._request_response(full_text)
         if response is None:
             logger.warning(f"No response from {self.BACKEND_NAME}", module=self.LOG_MODULE)

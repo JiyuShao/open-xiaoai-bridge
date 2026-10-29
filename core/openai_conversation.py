@@ -19,6 +19,10 @@ class OpenAIConversationController(ExternalConversationController):
         self._turn_voice = None
         self._feedback_succeeded = False
 
+    @property
+    def exit_keywords(self):
+        return list(dict.fromkeys(super().exit_keywords + ["拜拜","再见","没事了","不用了"]))
+
     async def start(self):
         try:
             await super().start()
@@ -33,7 +37,7 @@ class OpenAIConversationController(ExternalConversationController):
         if self._cfg("tools_enabled", False):
             if app is None:
                 raise RuntimeError("受控工具需要 MainApp 审计服务")
-            self._turn_tools = ConversationTools(app.native_bridge, self.backend._session_key)
+            self._turn_tools = ConversationTools(app.native_bridge, self.backend._session_key, home=app.home_assistant, user_text=getattr(self,"_current_user_text",text))
         else:
             self._turn_tools = None
         response, self._turn_voice = await self.backend.chat_turn(text, self._turn_tools)

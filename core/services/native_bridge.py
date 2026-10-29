@@ -51,6 +51,8 @@ class NativeBridgeService:
         request_id: str | None = None,
         silent: bool = True,
         timeout_ms: int = 10000,
+        allow_high_risk: bool = False,
+        decision: dict[str, Any] | None = None,
     ) -> OperationRecord:
         if not isinstance(command, str) or not command.strip() or len(command) > self.MAX_COMMAND_LENGTH or "\x00" in command:
             raise ValueError("command 必须是 1 到 1000 字的非空文本，且不含空字符")
@@ -58,6 +60,8 @@ class NativeBridgeService:
             raise ValueError("silent 必须是布尔值")
 
         async def invoke() -> OperationOutcome:
+            if not allow_high_risk and re.search(r"门锁|燃气|热水器|取暖器|解锁|开门|大门|制热|unlock|front.?door|heater|gas", command, re.I):
+                return OperationOutcome("rejected", False, error="explicit_confirmation_required", confirmation="not_submitted")
             speaker = self.speaker_provider()
             if speaker is None:
                 return OperationOutcome("rejected", False, error="speaker_unavailable", confirmation="rejected")
@@ -77,7 +81,7 @@ class NativeBridgeService:
             )
 
         return await self.run_operation(
-            "xiaoai_command", command, {"silent": silent}, invoke,
+            "xiaoai_command", command, {"silent": silent, **({"decision": decision} if decision else {})}, invoke,
             session_key=session_key, request_id=request_id, timeout_ms=timeout_ms,
         )
 
