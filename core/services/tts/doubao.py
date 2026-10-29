@@ -3,6 +3,7 @@ Doubao (ByteDance Volcano Engine) TTS Service
 """
 
 import json
+from typing import Any
 
 from core.utils.config import ConfigManager
 
@@ -460,10 +461,10 @@ class DoubaoTTS:
         self,
         app_id: str,
         access_key: str,
-        resource_id: str = None,
+        resource_id: str | None = None,
         speaker: str = "zh_female_cancan_mars_bigtts",
         api_url: str = DEFAULT_URL,
-        audio_format: str = None,
+        audio_format: str | None = None,
     ):
         self.app_id = app_id
         self.access_key = access_key
@@ -513,18 +514,22 @@ class DoubaoTTS:
         sample_rate: int = 24000,
         speed: float = 1.0,
         enable_timestamp: bool = False,
-        context_texts: list = None,
-        emotion: str = None,
+        context_texts: list[Any] | None = None,
+        emotion: str | None = None,
+        explicit_language: str = "zh",
+        explicit_dialect: str | None = None,
     ) -> dict:
         """构建请求参数"""
-        additions = {
-            "explicit_language": "zh",
+        additions: dict[str, Any] = {
+            "explicit_language": explicit_language or "zh",
             "disable_markdown_filter": True,
         }
+        if explicit_dialect:
+            additions["explicit_dialect"] = explicit_dialect
         if enable_timestamp:
             additions["enable_timestamp"] = True
 
-        req_params = {
+        req_params: dict[str, Any] = {
             "text": text,
             "speaker": self.speaker,
             "audio_params": {

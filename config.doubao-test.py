@@ -12,5 +12,9 @@ APP_CONFIG = {
         "system_prompt": "你是小爱豆包。请亲切、自然、简洁地回答。",
         "history_max_messages": 20,
         "response_timeout": 2,
+        "tts_provider": "doubao",
+        "tts_speaker": "zh_female_vv_uranus_bigtts",
+        "tts_speed": 1.0,
+        "tts_output_mode": "record",
     },
 }

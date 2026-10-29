@@ -11,6 +11,7 @@ from typing import Any
 import aiohttp
 
 from core.services.chat_sessions import ChatSessions
+from core.services.tts.voice import VoiceDirective
 from core.utils.base import get_env
 from core.utils.config import ConfigManager
 from core.utils.logger import logger
@@ -42,6 +43,7 @@ class OpenAIManager:
     _tts_speaker = None
     _session_tts_speakers: dict[str, str] = {}
     _tts_speed = 1.0
+    _tts_output_mode = "play"
     _rule_prompt = ""
     _rule_prompt_for_skill = ""
     _sessions: dict[str, list[dict[str, str]]] = {}
@@ -49,6 +51,8 @@ class OpenAIManager:
     _response_events: dict[str, asyncio.Future] = {}
     _response_texts: dict[str, str] = {}
     _response_tts_speakers: dict[str, str | None] = {}
+    _response_voice_directives: dict[str, VoiceDirective | None] = {}
+    _session_voice_directives: dict[str, VoiceDirective] = {}
     _response_tasks: dict[str, asyncio.Task] = {}
     last_error: str | None = None
 
@@ -112,6 +116,7 @@ class OpenAIManager:
             else {}
         )
         cls._tts_speed = float(config.get("tts_speed", 1.0))
+        cls._tts_output_mode = str(config.get("tts_output_mode", "play") or "play")
         cls._rule_prompt = str(config.get("rule_prompt", "") or "")
         cls._rule_prompt_for_skill = str(config.get("rule_prompt_for_skill", "") or "")
 
@@ -153,6 +158,8 @@ class OpenAIManager:
         cls._response_events.clear()
         cls._response_texts.clear()
         cls._response_tts_speakers.clear()
+        cls._response_voice_directives.clear()
+        cls._session_voice_directives.clear()
 
     @classmethod
     def is_connected(cls) -> bool:
@@ -175,7 +182,9 @@ class OpenAIManager:
     def reset_session(cls, session_key: str | None = None):
         if cls._history_store:
             raise RuntimeError("持久化会话请使用 await start_new_session()")
-        cls._sessions.pop(session_key or cls._session_key, None)
+        key = session_key or cls._session_key
+        cls._sessions.pop(key, None)
+        cls._session_voice_directives.pop(key, None)
 
     @classmethod
     async def start_new_session(cls, session_key: str | None = None):
@@ -184,6 +193,7 @@ class OpenAIManager:
         if cls._history_store:
             await cls._history_store.reset(key)
         cls._sessions.pop(key, None)
+        cls._session_voice_directives.pop(key, None)
 
     @classmethod
     def get_tts_speaker_for_session_key(cls, session_key: str | None = None) -> str | None:
@@ -209,6 +219,7 @@ class OpenAIManager:
             return await cls._wait_response(run_id)
         finally:
             cls._response_tts_speakers.pop(run_id, None)
+            cls._response_voice_directives.pop(run_id, None)
 
     @classmethod
     async def send_and_play_reply(cls, text: str, wait_response: bool = False) -> str | None:
@@ -224,10 +235,12 @@ class OpenAIManager:
                 await cls._play_response_with_tts(
                     response_text,
                     tts_speaker=cls._response_tts_speakers.get(run_id),
+                    voice_directive=cls._response_voice_directives.get(run_id),
                 )
             return response_text
         finally:
             cls._response_tts_speakers.pop(run_id, None)
+            cls._response_voice_directives.pop(run_id, None)
 
     @classmethod
     async def _send_and_track(cls, text: str) -> str | None:
@@ -273,9 +286,10 @@ class OpenAIManager:
     @classmethod
     async def _run_chat_completion(cls, run_id: str, text: str):
         try:
-            response_text = await cls._request_chat_completion(text)
+            response_text, voice_directive = await cls._request_chat_completion(text)
             if response_text:
                 cls._response_texts[run_id] = response_text
+                cls._response_voice_directives[run_id] = voice_directive
                 logger.ai_response(response_text, module=f"OpenAI({cls._session_key})")
             else:
                 cls.last_error = "empty_response"
@@ -289,7 +303,9 @@ class OpenAIManager:
                 waiter.get_loop().call_soon_threadsafe(waiter.set_result, None)
 
     @classmethod
-    async def _request_chat_completion(cls, text: str) -> str | None:
+    async def _request_chat_completion(
+        cls, text: str
+    ) -> tuple[str | None, VoiceDirective | None]:
         session_key = cls._session_key
         store = cls._history_store
         saved = await store.load(session_key) if store else None
@@ -320,12 +336,15 @@ class OpenAIManager:
                 if response.status >= 400:
                     raise RuntimeError(f"Chat completion HTTP {response.status}")
 
-        response_text = cls._extract_response_text(body)
+        response_text, response_directive = cls._extract_response_details(body)
         if response_text:
             cls._append_history(history, text, response_text)
             if store and saved:
                 await store.save(saved, history)
-        return response_text
+            if response_directive and response_directive.persist:
+                cls._session_voice_directives[session_key] = response_directive.for_one_turn()
+        selected_directive = response_directive or cls._session_voice_directives.get(session_key)
+        return response_text, selected_directive
 
     @classmethod
     def _headers(cls, session_key: str | None = None) -> dict[str, str]:
@@ -371,28 +390,48 @@ class OpenAIManager:
 
     @classmethod
     def _extract_response_text(cls, body: Any) -> str | None:
+        response_text, _ = cls._extract_response_details(body)
+        return response_text
+
+    @classmethod
+    def _extract_response_details(
+        cls, body: Any
+    ) -> tuple[str | None, VoiceDirective | None]:
+        """读取文字和可选语音元数据，不把元数据交给朗读文本。"""
         if not isinstance(body, dict):
-            return None
+            return None, None
         choices = body.get("choices")
         if not isinstance(choices, list) or not choices:
-            return None
+            return None, None
         first = choices[0]
         if not isinstance(first, dict):
-            return None
+            return None, None
         message = first.get("message")
+        response_text: str | None = None
+        voice_metadata: Any = first.get("voice") or body.get("voice")
         if isinstance(message, dict):
+            message_metadata = message.get("metadata", {})
+            if isinstance(message.get("voice"), dict):
+                voice_metadata = message["voice"]
+            elif isinstance(message_metadata, dict) and isinstance(
+                message_metadata.get("voice"), dict
+            ):
+                voice_metadata = message_metadata["voice"]
             content = message.get("content")
             if isinstance(content, str):
-                return content.strip()
-            if isinstance(content, list):
+                response_text = content.strip()
+            elif isinstance(content, list):
                 parts = [
                     item.get("text", "")
                     for item in content
                     if isinstance(item, dict) and item.get("type") == "text"
                 ]
-                return "".join(parts).strip() or None
-        text = first.get("text")
-        return text.strip() if isinstance(text, str) else None
+                response_text = "".join(parts).strip() or None
+        if response_text is None:
+            text = first.get("text")
+            response_text = text.strip() if isinstance(text, str) else None
+        directive = VoiceDirective.from_mapping(voice_metadata)
+        return response_text, directive
 
     @classmethod
     async def _wait_and_play_response(cls, run_id: str):
@@ -402,11 +441,13 @@ class OpenAIManager:
                 await cls._play_response_with_tts(
                     response_text,
                     tts_speaker=cls._response_tts_speakers.get(run_id),
+                    voice_directive=cls._response_voice_directives.get(run_id),
                 )
             else:
                 logger.warning(f"[OpenAI] No response text received for run {run_id}")
         finally:
             cls._response_tts_speakers.pop(run_id, None)
+            cls._response_voice_directives.pop(run_id, None)
 
     @classmethod
     async def _play_response_with_tts(
@@ -414,6 +455,7 @@ class OpenAIManager:
         text: str,
         tts_speaker: str | None = None,
         playback_token: int | None = None,
+        voice_directive: VoiceDirective | None = None,
     ):
         """Synthesize text and play it through the speaker."""
         from core.services.tts.router import TTSRouter
@@ -423,7 +465,9 @@ class OpenAIManager:
             text,
             configured_provider=cls._tts_provider,
             tts_speaker=resolved_tts_speaker,
+            voice_directive=voice_directive,
             tts_speed=cls._tts_speed,
+            output_mode=cls._tts_output_mode,
             playback_token=playback_token,
             log_prefix="OpenAI",
         )

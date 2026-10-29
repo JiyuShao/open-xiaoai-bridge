@@ -14,6 +14,7 @@ import open_xiaoai_server
 from aiohttp import web
 from core.ref import get_speaker, get_xiaoai
 from core.services.tts.doubao import DoubaoTTS
+from core.services.tts.voice import VoiceDirective
 from core.utils.config import ConfigManager
 from core.utils.logger import logger
 
@@ -402,6 +403,8 @@ class APIServer:
                 "speed": 1.0,                       # optional, 0.8-2.0
                 "blocking": true,                   # optional, default false
                 "emotion": "happy",                 # optional, emotion for multi-emotion speakers
+                "explicit_language": "zh",          # optional, e.g. zh or en
+                "explicit_dialect": "sichuan",      # optional, supported dialect hint
                 "context_texts": [                   # optional, only for 2.0 speakers (only first value effective)
                     "你可以说慢一点吗？",
                     "你可以用特别痛心的语气说话吗？",
@@ -440,11 +443,18 @@ class APIServer:
                     status=400
                 )
 
-            speaker_id = data.get("speaker_id") or data.get("speaker") or tts_config.get("default_speaker") or "zh_female_shuangkuaisisi_moon_bigtts"
+            speaker_id = data.get("speaker_id") or data.get("speaker") or tts_config.get("default_speaker") or "zh_female_vv_uranus_bigtts"
             speed = float(data.get("speed", 1.0))
             blocking = data.get("blocking", False)
-            context_texts = data.get("context_texts")  # Only supported for 2.0 speakers
-            emotion = data.get("emotion")  # Emotion parameter for multi-emotion speakers
+            voice_directive = VoiceDirective.from_mapping(data)
+            context_texts = voice_directive.context_texts() if voice_directive else None
+            emotion = voice_directive.emotion if voice_directive else None
+            explicit_language = (
+                voice_directive.explicit_language if voice_directive else None
+            )
+            explicit_dialect = (
+                voice_directive.explicit_dialect if voice_directive else None
+            )
 
             speaker = get_speaker()
             if not speaker:
@@ -485,6 +495,8 @@ class APIServer:
                         sample_rate=24000,
                         emotion=emotion,
                         context_texts=context_texts,
+                        explicit_language=explicit_language,
+                        explicit_dialect=explicit_dialect,
                     )
 
                 if blocking:
@@ -509,6 +521,8 @@ class APIServer:
                         sample_rate=24000,
                         emotion=emotion,
                         context_texts=context_texts,
+                        explicit_language=explicit_language,
+                        explicit_dialect=explicit_dialect,
                     )
                     logger.debug("[APIServer] Finished playing TTS audio")
 

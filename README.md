@@ -521,7 +521,10 @@ python3 -m scripts.doubao_text_chat --message "新的话题" --new-session --sta
 
 测试配置中的 `xiaoai-doubao` / “小爱豆包”仅是本地测试身份，未创建或切换真实 Hermes profile。
 真实 Hermes 的 profile、工具隔离、记忆协议和模型效果仍待独立验证。
-当前入口无语音合成、工具执行或唤醒词检测；这些由后续任务实现。
+当前入口不连接真实 TTS、工具或音箱。兼容服务回复可以携带可选的 `voice` 元数据，
+由统一 TTS Router 校验后透传 `context_text`、`explicit_language`、`explicit_dialect`
+和 `emotion`；`session_preference=true` 只在当前进程 session 内延续，新会话会清除。
+真实音频合成、工具执行和唤醒词检测仍需后续任务验证。
 
 OpenAI 兼容通道可选配置 `openai.history_path`，将聊天上下文保存到 SQLite；未配置时沿用内存历史。
 持久化保留最近 `history_max_messages` 条消息（测试配置为 20 条），以客户端历史为上下文来源；

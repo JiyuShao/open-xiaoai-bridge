@@ -4,6 +4,7 @@ import types
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from core.services.tts.voice import VoiceDirective
 
 sys.modules.setdefault("open_xiaoai_server", types.SimpleNamespace())
 
@@ -80,6 +81,85 @@ class BackendTTSProviderConfigTest(unittest.TestCase):
 
 
 class BackendTTSRoutingTest(unittest.IsolatedAsyncioTestCase):
+    async def test_record_mode_never_calls_native_playback(self):
+        records = []
+        directive = VoiceDirective(
+            context_text="请温柔回答",
+            explicit_language="zh",
+            explicit_dialect="sichuan",
+        )
+        with patch.object(
+            router_module.open_xiaoai_server,
+            "tts_play",
+            new=AsyncMock(),
+            create=True,
+        ) as tts_play:
+            await TTSRouter.play(
+                "你好",
+                configured_provider="doubao",
+                tts_speaker=None,
+                voice_directive=directive,
+                output_mode="record",
+                request_sink=records.append,
+            )
+        tts_play.assert_not_awaited()
+        self.assertEqual("zh_female_vv_uranus_bigtts", records[0]["speaker"])
+        self.assertEqual("sichuan", records[0]["explicit_dialect"])
+
+    async def test_record_sink_failure_does_not_fallback_to_native_playback(self):
+        speaker = unittest.mock.MagicMock()
+        speaker.play = AsyncMock()
+
+        def failing_sink(_record):
+            raise RuntimeError("recording failed")
+
+        with patch("core.ref.get_speaker", return_value=speaker):
+            await TTSRouter.play(
+                "你好",
+                configured_provider="doubao",
+                tts_speaker=None,
+                output_mode="record",
+                request_sink=failing_sink,
+            )
+        speaker.play.assert_not_awaited()
+
+    async def test_doubao_forwards_voice_directive_to_native_path(self):
+        config = {
+            "app_id": "test-app",
+            "access_key": "test-key",
+            "default_speaker": "zh_female_vv_uranus_bigtts",
+            "stream": False,
+        }
+        config_manager = types.SimpleNamespace(
+            get_app_config=lambda *_args: config,
+        )
+        directive = VoiceDirective(
+            context_text="请用温柔、自然的语气回答",
+            explicit_language="zh",
+            explicit_dialect="sichuan",
+            emotion="warm",
+        )
+        with patch.object(
+            router_module.ConfigManager, "instance", return_value=config_manager
+        ):
+            with patch.object(
+                router_module.open_xiaoai_server,
+                "tts_play",
+                new=AsyncMock(),
+                create=True,
+            ) as tts_play:
+                await TTSRouter.play(
+                    "你好",
+                    configured_provider="doubao",
+                    tts_speaker=None,
+                    voice_directive=directive,
+                )
+        kwargs = tts_play.await_args.kwargs
+        self.assertEqual("zh", kwargs["explicit_language"])
+        self.assertEqual("sichuan", kwargs["explicit_dialect"])
+        self.assertEqual(["请用温柔、自然的语气回答"], kwargs["context_texts"])
+        self.assertEqual("warm", kwargs["emotion"])
+
     async def test_openclaw_delegates_to_shared_router(self):
         module = importlib.import_module("core.openclaw")
         manager = module.OpenClawManager

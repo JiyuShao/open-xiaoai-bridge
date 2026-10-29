@@ -37,11 +37,16 @@ impl DoubaoStreamClient {
         speed: f32,
         context_texts: Option<Vec<String>>,
         emotion: Option<String>,
+        explicit_language: Option<String>,
+        explicit_dialect: Option<String>,
     ) -> Value {
-        let additions = json!({
-            "explicit_language": "zh",
+        let mut additions = json!({
+            "explicit_language": explicit_language.as_deref().unwrap_or("zh"),
             "disable_markdown_filter": true,
         });
+        if let Some(dialect) = explicit_dialect {
+            additions["explicit_dialect"] = json!(dialect);
+        }
 
         let mut audio_params = json!({
             "format": format,
@@ -119,6 +124,8 @@ impl DoubaoStreamClient {
         speed: f32,
         context_texts: Option<Vec<String>>,
         emotion: Option<String>,
+        explicit_language: Option<String>,
+        explicit_dialect: Option<String>,
         tx: mpsc::Sender<Vec<u8>>,
     ) -> Result<(), String> {
         self.stream_audio_with_ready(
@@ -128,6 +135,8 @@ impl DoubaoStreamClient {
             speed,
             context_texts,
             emotion,
+            explicit_language,
+            explicit_dialect,
             tx,
             None,
         )
@@ -143,6 +152,8 @@ impl DoubaoStreamClient {
         speed: f32,
         context_texts: Option<Vec<String>>,
         emotion: Option<String>,
+        explicit_language: Option<String>,
+        explicit_dialect: Option<String>,
         tx: mpsc::Sender<Vec<u8>>,
         ready_tx: Option<oneshot::Sender<Result<(), String>>>,
     ) -> Result<(), String> {
@@ -159,7 +170,16 @@ impl DoubaoStreamClient {
             .build()
             .map_err(|e| format!("Client build error: {}", e))?;
 
-        let payload = self.build_payload(text, format, sample_rate, speed, context_texts, emotion);
+        let payload = self.build_payload(
+            text,
+            format,
+            sample_rate,
+            speed,
+            context_texts,
+            emotion,
+            explicit_language,
+            explicit_dialect,
+        );
 
         let response = client
             .post(&self.api_url)
@@ -247,6 +267,8 @@ impl DoubaoStreamClient {
         speed: f32,
         context_texts: Option<Vec<String>>,
         emotion: Option<String>,
+        explicit_language: Option<String>,
+        explicit_dialect: Option<String>,
     ) -> Result<Vec<u8>, String> {
         crate::pylog!(
             "[TTS] Sending non-stream request to Doubao: format={}, resource_id={}, speaker={}, text_len={}",
@@ -261,7 +283,16 @@ impl DoubaoStreamClient {
             .build()
             .map_err(|e| format!("Client build error: {}", e))?;
 
-        let payload = self.build_payload(text, format, sample_rate, speed, context_texts, emotion);
+        let payload = self.build_payload(
+            text,
+            format,
+            sample_rate,
+            speed,
+            context_texts,
+            emotion,
+            explicit_language,
+            explicit_dialect,
+        );
 
         let response = client
             .post(&self.api_url)

@@ -2,12 +2,14 @@
 
 import os
 import tempfile
+from typing import Any, Callable
 
 import open_xiaoai_server
 
 from core.services.tts.doubao import DoubaoTTS
 from core.services.tts.mlx_audio import MLXAudioTTS
 from core.services.tts.openai import PLAYBACK_SUPPORTED_FORMATS, OpenAITTS
+from core.services.tts.voice import VoiceDirective
 from core.utils.config import ConfigManager
 from core.utils.logger import logger
 
@@ -44,11 +46,26 @@ class TTSRouter:
         tts_speaker: str | None,
         tts_speed: float = 1.0,
         playback_token: int | None = None,
+        voice_directive: VoiceDirective | None = None,
+        output_mode: str = "play",
+        request_sink: Callable[[dict[str, Any]], Any] | None = None,
         log_prefix: str = "TTS",
     ) -> None:
         """Synthesize and play text, falling back to XiaoAI native TTS."""
         provider = cls.resolve_provider(configured_provider, tts_speaker)
         try:
+            if output_mode not in ("play", "record"):
+                raise ValueError(f"Unknown TTS output mode: {output_mode}")
+            if output_mode == "record":
+                await cls._record_request(
+                    text,
+                    provider=provider,
+                    tts_speaker=tts_speaker,
+                    tts_speed=tts_speed,
+                    voice_directive=voice_directive,
+                    request_sink=request_sink,
+                )
+                return
             if provider == "xiaoai":
                 from core.ref import get_speaker
 
@@ -63,6 +80,7 @@ class TTSRouter:
                     tts_speaker=tts_speaker,
                     tts_speed=tts_speed,
                     playback_token=playback_token,
+                    voice_directive=voice_directive,
                 )
                 return
 
@@ -76,7 +94,46 @@ class TTSRouter:
                 f"[{log_prefix}] Error playing response with TTS: "
                 f"{type(exc).__name__}: {exc}"
             )
+            if output_mode == "record":
+                return
             await cls._fallback_to_xiaoai(text, log_prefix=log_prefix)
+
+    @classmethod
+    async def _record_request(
+        cls,
+        text: str,
+        *,
+        provider: str,
+        tts_speaker: str | None,
+        tts_speed: float,
+        voice_directive: VoiceDirective | None,
+        request_sink: Callable[[dict[str, Any]], Any] | None,
+    ) -> None:
+        """记录合成请求，不访问凭据、网络、音箱或降级播放。"""
+        recorded_speaker = tts_speaker
+        if provider == "doubao" and recorded_speaker in (None, cls.XIAOAI_TTS_SPEAKER):
+            tts_config = ConfigManager.instance().get_app_config("tts.doubao", {})
+            recorded_speaker = tts_config.get(
+                "default_speaker", "zh_female_vv_uranus_bigtts"
+            )
+        record: dict[str, Any] = {
+            "provider": provider,
+            "text": text,
+            "speaker": recorded_speaker,
+            "speed": tts_speed,
+        }
+        if voice_directive:
+            record.update({
+                "context_text": voice_directive.context_text,
+                "explicit_language": voice_directive.explicit_language,
+                "explicit_dialect": voice_directive.explicit_dialect,
+                "emotion": voice_directive.emotion,
+            })
+        if request_sink:
+            result = request_sink(record)
+            if hasattr(result, "__await__"):
+                await result
+        logger.info(f"[TTS] Recorded silent synthesis request: provider={provider}")
 
     @classmethod
     async def _play_doubao(
@@ -86,6 +143,7 @@ class TTSRouter:
         tts_speaker: str | None,
         tts_speed: float,
         playback_token: int | None,
+        voice_directive: VoiceDirective | None,
     ) -> None:
         tts_config = ConfigManager.instance().get_app_config("tts.doubao", {})
         app_id = tts_config.get("app_id")
@@ -96,7 +154,7 @@ class TTSRouter:
         speaker_id = (
             tts_speaker
             if tts_speaker and tts_speaker != cls.XIAOAI_TTS_SPEAKER
-            else tts_config.get("default_speaker", "zh_female_xiaohe_uranus_bigtts")
+            else tts_config.get("default_speaker", "zh_female_vv_uranus_bigtts")
         )
         tts = DoubaoTTS(
             app_id=app_id,
@@ -104,6 +162,18 @@ class TTSRouter:
             speaker=speaker_id,
         )
         resolved_format = tts.resolve_audio_format(text)
+        voice_kwargs = {
+            "explicit_language": (
+                voice_directive.explicit_language if voice_directive else None
+            ),
+            "explicit_dialect": (
+                voice_directive.explicit_dialect if voice_directive else None
+            ),
+            "emotion": voice_directive.emotion if voice_directive else None,
+            "context_texts": (
+                voice_directive.context_texts() if voice_directive else None
+            ),
+        }
         if tts_config.get("stream", False):
             await open_xiaoai_server.tts_stream_play(
                 text,
@@ -114,6 +184,7 @@ class TTSRouter:
                 speed=tts_speed,
                 format=resolved_format,
                 sample_rate=24000,
+                **voice_kwargs,
                 playback_token=playback_token,
             )
         else:
@@ -126,6 +197,7 @@ class TTSRouter:
                 speed=tts_speed,
                 format=resolved_format,
                 sample_rate=24000,
+                **voice_kwargs,
                 playback_token=playback_token,
             )
 

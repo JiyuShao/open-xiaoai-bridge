@@ -42,6 +42,63 @@ class OpenAIHeadersTest(unittest.TestCase):
             headers["X-Hermes-Session-Key"],
         )
 
+
+class OpenAIVoiceMetadataTest(unittest.TestCase):
+    def setUp(self):
+        module = importlib.import_module("core.openai")
+        self.manager = module.OpenAIManager
+        self.manager._session_voice_directives = {}
+
+    def test_extracts_voice_metadata_without_adding_it_to_spoken_text(self):
+        text, directive = self.manager._extract_response_details({
+            "choices": [{
+                "message": {
+                    "content": "你好，今天过得怎么样？",
+                    "metadata": {
+                        "voice": {
+                            "context_text": "请用关心的语气回答",
+                            "explicit_language": "zh",
+                            "explicit_dialect": "sichuan",
+                            "session_preference": True,
+                        }
+                    },
+                }
+            }]
+        })
+        self.assertEqual("你好，今天过得怎么样？", text)
+        self.assertEqual("sichuan", directive.explicit_dialect)
+        self.assertTrue(directive.persist)
+
+    def test_invalid_voice_metadata_does_not_discard_text(self):
+        text, directive = self.manager._extract_response_details({
+            "choices": [{
+                "message": {
+                    "content": "继续用默认声音",
+                    "voice": {"explicit_dialect": "unknown"},
+                }
+            }]
+        })
+        self.assertEqual("继续用默认声音", text)
+        self.assertIsNone(directive)
+
+    def test_memory_session_reset_clears_voice_preference(self):
+        self.manager._history_store = None
+        self.manager._session_key = "agent:xiaoai-doubao:test"
+        self.manager._session_voice_directives[self.manager._session_key] = (
+            self.manager._extract_response_details({
+                "choices": [{
+                    "message": {
+                        "content": "x",
+                        "voice": {"explicit_language": "en"},
+                    }
+                }]
+            })[1]
+        )
+        self.manager.reset_session()
+        self.assertNotIn(
+            "agent:xiaoai-doubao:test", self.manager._session_voice_directives
+        )
+
     def test_session_header_omitted_when_session_key_empty(self):
         self.manager._session_header = "X-Hermes-Session-Key"
         self.manager._session_key = ""
