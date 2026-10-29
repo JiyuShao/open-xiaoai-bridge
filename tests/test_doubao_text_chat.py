@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -72,6 +73,18 @@ class DoubaoTextChatTest(unittest.TestCase):
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertEqual(recovered["history_messages"], 2)
         self.assertEqual(recovered["request_count"], 1)
+
+    def test_timeout_during_history_write_does_not_commit_a_failed_turn(self):
+        self.chat("已保存的对话")
+        started = time.monotonic()
+        process, failed = self.chat("写入超时的对话", "--mock-failure", "locked-history")
+        elapsed = time.monotonic() - started
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIsNone(failed["reply"])
+        self.assertEqual(failed["error"], "TimeoutError")
+        self.assertLess(elapsed, 3)
+        _, recovered = self.chat("检查恢复后的历史")
+        self.assertEqual(recovered["history_messages"], 2)
 
 
 if __name__ == "__main__":

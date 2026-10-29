@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import sqlite3
+import threading
 import uuid
 
 
@@ -25,11 +26,16 @@ class ChatSessions:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.path.touch(mode=0o600, exist_ok=True)
         connection = sqlite3.connect(self.path)
-        connection.execute(
-            "CREATE TABLE IF NOT EXISTS sessions "
-            "(key TEXT PRIMARY KEY, remote_key TEXT NOT NULL, messages TEXT NOT NULL)"
-        )
-        return connection
+        try:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS sessions "
+                "(key TEXT PRIMARY KEY, remote_key TEXT NOT NULL, messages TEXT NOT NULL)"
+            )
+            connection.commit()
+            return connection
+        except BaseException:
+            connection.close()
+            raise
 
     async def load(self, key: str) -> ChatSession:
         """恢复已有上下文；第一次使用时创建新的远端会话标识。"""
@@ -62,20 +68,63 @@ class ChatSessions:
 
     async def save(self, session: ChatSession, messages: list[dict[str, str]]) -> None:
         """原子保存；旧请求不得覆盖已重建或被其他请求更新的会话。"""
-        await asyncio.to_thread(self._save, session, messages)
+        cancelled = threading.Event()
+        commit_lock = threading.Lock()
+        worker = asyncio.create_task(
+            asyncio.to_thread(self._save, session, messages, cancelled, commit_lock)
+        )
+        try:
+            await worker
+        except asyncio.CancelledError:
+            # asyncio 无法停止已经等待 SQLite 文件锁的线程。先标记取消，
+            # 让它在拿到锁后回滚，不在调用方超时后提交本轮。与线程中的
+            # “检查取消并提交”共用锁，避免检查和提交之间插入取消。
+            if commit_lock.acquire(blocking=False):
+                cancelled.set()
+                commit_lock.release()
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                # 工作线程仍受 shield 保护；吞掉重复取消后再传播原始取消。
+                try:
+                    await worker
+                except Exception:
+                    pass
+            except Exception:
+                # 保留调用方的取消/超时结果。线程已收到回滚通知，线程异常
+                # 不能被误当成一条对话回复。
+                pass
+            raise
 
-    def _save(self, session: ChatSession, messages: list[dict[str, str]]) -> None:
+    def _save(
+        self,
+        session: ChatSession,
+        messages: list[dict[str, str]],
+        cancelled: threading.Event | None = None,
+        commit_lock=None,
+    ) -> None:
         connection = self._connect()
         try:
-            with connection:
-                changed = connection.execute(
-                    "UPDATE sessions SET messages = ? "
-                    "WHERE key = ? AND remote_key = ? AND messages = ?",
-                    (json.dumps(messages, ensure_ascii=False), session.key,
-                     session.remote_key, json.dumps(session.messages, ensure_ascii=False)),
-                ).rowcount
-                if not changed:
-                    raise RuntimeError("会话已更新，本轮回复未保存；请求不会自动重发")
+            connection.execute("BEGIN IMMEDIATE")
+            if cancelled and cancelled.is_set():
+                connection.rollback()
+                return
+            changed = connection.execute(
+                "UPDATE sessions SET messages = ? "
+                "WHERE key = ? AND remote_key = ? AND messages = ?",
+                (json.dumps(messages, ensure_ascii=False), session.key,
+                 session.remote_key, json.dumps(session.messages, ensure_ascii=False)),
+            ).rowcount
+            if not changed:
+                connection.rollback()
+                raise RuntimeError("会话已更新，本轮回复未保存；请求不会自动重发")
+            if commit_lock is None:
+                commit_lock = threading.Lock()
+            with commit_lock:
+                if cancelled and cancelled.is_set():
+                    connection.rollback()
+                    return
+                connection.commit()
         finally:
             connection.close()
 

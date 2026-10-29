@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import sys
 
 from aiohttp import web
@@ -22,8 +23,26 @@ async def run(args: argparse.Namespace) -> int:
     from core.utils.config import ConfigManager
 
     received = []
+    history_lock: sqlite3.Connection | None = None
+
+    def acquire_history_lock(path: Path) -> sqlite3.Connection:
+        connection = sqlite3.connect(path, check_same_thread=False)
+        connection.execute("BEGIN EXCLUSIVE")
+        return connection
+
+    def release_history_lock_sync(connection: sqlite3.Connection) -> None:
+        connection.rollback()
+        connection.close()
+
+    async def release_history_lock() -> None:
+        nonlocal history_lock
+        connection = history_lock
+        history_lock = None
+        if connection is not None:
+            await asyncio.to_thread(release_history_lock_sync, connection)
 
     async def respond(request: web.Request) -> web.Response:
+        nonlocal history_lock
         body = await request.json()
         received.append(body)
         body["session_key"] = request.headers.get("X-Hermes-Session-Key")
@@ -31,6 +50,12 @@ async def run(args: argparse.Namespace) -> int:
             return web.json_response({"error": "模拟服务错误"}, status=503)
         if args.mock_failure == "timeout":
             await asyncio.sleep(10)
+        if args.mock_failure == "locked-history":
+            # 仅锁住测试数据库，模拟回复到达后持久化被另一进程占用。
+            history_lock = await asyncio.to_thread(acquire_history_lock, args.state)
+            asyncio.get_running_loop().call_later(
+                3, lambda: asyncio.create_task(release_history_lock())
+            )
         return web.json_response({"choices": [{"message": {
             "content": "" if args.mock_failure == "empty" else
             "模拟回复：" + body["messages"][-1]["content"],
@@ -73,6 +98,7 @@ async def run(args: argparse.Namespace) -> int:
     finally:
         await OpenAIManager.close()
         await runner.cleanup()
+        await release_history_lock()
         listener.close()
 
 
@@ -82,7 +108,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--message", required=True)
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--new-session", action="store_true")
-    parser.add_argument("--mock-failure", choices=("empty", "http-error", "timeout", "unavailable"))
+    parser.add_argument("--mock-failure", choices=(
+        "empty", "http-error", "timeout", "unavailable", "locked-history",
+    ))
     args = parser.parse_args(argv)
     if not args.message.strip():
         parser.error("message 不能为空")
