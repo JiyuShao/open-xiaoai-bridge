@@ -13,6 +13,7 @@ APP_CONFIG = {
     "asr": {"model": "sense_voice", "int8": True},
     "openai": {
         "profile": "xiaoai-doubao",
+        "tools_enabled": True,
         "display_name": "小爱豆包",
         "base_url": os.environ.get("HERMES_BASE_URL", ""),
         "api_key": os.environ.get("HERMES_API_KEY", ""),

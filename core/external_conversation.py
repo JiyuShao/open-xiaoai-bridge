@@ -17,6 +17,7 @@ Key design decisions:
 
 import asyncio
 import os
+from typing import Any
 
 import open_xiaoai_server
 
@@ -70,7 +71,7 @@ class ExternalConversationController:
     BACKEND_NAME = "OpenClaw"
     LOG_MODULE = "OpenClaw Conv"
     WAKEUP_SOURCE = "openclaw"
-    MANAGER = None
+    MANAGER: Any = None
 
     def __init__(self):
         self.config = ConfigManager.instance()
@@ -80,6 +81,7 @@ class ExternalConversationController:
         self.active = False
         self.keep_kws_while_listening = False
         self.is_listening = False
+        self.yielded_playback = False
 
         # Per-session asyncio.Future used to receive VAD events
         self._vad_future: asyncio.Future | None = None
@@ -192,6 +194,8 @@ class ExternalConversationController:
                 result = await self._run_one_turn_with_xiaoai_asr()
             else:
                 result = await self._run_one_turn_with_local_asr()
+            if result == "handoff":
+                break
             if result in ("exit", "timeout"):
                 if self.uses_xiaoai_asr():
                     await self._stop_xiaoai_native_listening()
@@ -245,9 +249,7 @@ class ExternalConversationController:
         # 先发出请求（不阻塞等回复），立即播"咻"给用户即时反馈，再等回复
         # 注意：直接用 _send_and_track 而非 send(wait_response=False)，
         # 后者会立即清掉 Future，导致后续 _wait_response 拿不到回复
-        run_id = await self.backend._send_and_track(full_text)
-        await self._play_send_sound()
-        response = await self.backend._wait_response(run_id) if run_id else None
+        response = await self._request_response(full_text)
         if response is None:
             logger.warning(f"No response from {self.BACKEND_NAME}", module=self.LOG_MODULE)
             speaker = get_speaker()
@@ -263,6 +265,9 @@ class ExternalConversationController:
         #    VAD.resume() resets all state, so speech detection starts clean.
         await self._stop_recording()
         await self._play_tts(str(response))
+        if await self._finish_turn_feedback():
+            self.yielded_playback = True
+            return "handoff"
         await self._play_notify()
         await self._start_recording()
         logger.debug("Recording started, waiting for silence...", module=self.LOG_MODULE)
@@ -270,6 +275,14 @@ class ExternalConversationController:
         logger.debug("Ready to listen", module=self.LOG_MODULE)
 
         return "continue"
+
+    async def _request_response(self, text):
+        run_id = await self.backend._send_and_track(text)
+        await self._play_send_sound()
+        return await self.backend._wait_response(run_id) if run_id else None
+
+    async def _finish_turn_feedback(self) -> bool:
+        return False
 
     async def _run_one_turn_with_xiaoai_asr(self) -> str:
         """Execute a single conversation turn using XiaoAI native ASR."""

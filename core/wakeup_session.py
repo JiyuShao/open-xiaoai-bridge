@@ -170,7 +170,8 @@ class WakeupSessionManager:
             # 包括在提示音/TTS 关麦期间取消的情况。
             import open_xiaoai_server
             try:
-                await open_xiaoai_server.start_recording()
+                if not controller.yielded_playback:
+                    await open_xiaoai_server.start_recording()
             except Exception as exc:
                 logger.warning(f"[Wakeup] 恢复录音失败: {type(exc).__name__}")
             finally:

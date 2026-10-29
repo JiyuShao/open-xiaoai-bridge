@@ -5,12 +5,14 @@ including Hermes Agent API server mode.
 """
 
 import asyncio
+import json
 import uuid
 from typing import Any
 
 import aiohttp
 
 from core.services.chat_sessions import ChatSessions
+from core.services.conversation_tools import ConversationTools
 from core.services.tts.voice import VoiceDirective
 from core.utils.base import get_env
 from core.utils.config import ConfigManager
@@ -243,7 +245,20 @@ class OpenAIManager:
             cls._response_voice_directives.pop(run_id, None)
 
     @classmethod
-    async def _send_and_track(cls, text: str) -> str | None:
+    async def chat_turn(cls, text: str, tools: ConversationTools | None = None) -> tuple[str | None, VoiceDirective | None]:
+        """语音入口保留本轮声音要求，并确保取消会结束对应模型请求。"""
+        run_id = await cls._send_and_track(text, tools)
+        if run_id is None:
+            return None, None
+        try:
+            reply = await cls._wait_response(run_id)
+            return reply, cls._response_voice_directives.get(run_id)
+        finally:
+            cls._response_tts_speakers.pop(run_id, None)
+            cls._response_voice_directives.pop(run_id, None)
+
+    @classmethod
+    async def _send_and_track(cls, text: str, tools: ConversationTools | None = None) -> str | None:
         cls.last_error = None
         if not cls._initialized:
             cls.initialize_from_config()
@@ -258,7 +273,7 @@ class OpenAIManager:
         cls._response_texts[run_id] = ""
         cls._response_tts_speakers[run_id] = cls.get_tts_speaker_for_session_key()
         logger.user_speech(text, module=f"OpenAI({cls._session_key})")
-        cls._response_tasks[run_id] = asyncio.create_task(cls._run_chat_completion(run_id, text))
+        cls._response_tasks[run_id] = asyncio.create_task(cls._run_chat_completion(run_id, text, tools))
         return run_id
 
     @classmethod
@@ -284,9 +299,9 @@ class OpenAIManager:
                 await asyncio.gather(task, return_exceptions=True)
 
     @classmethod
-    async def _run_chat_completion(cls, run_id: str, text: str):
+    async def _run_chat_completion(cls, run_id: str, text: str, tools: ConversationTools | None = None):
         try:
-            response_text, voice_directive = await cls._request_chat_completion(text)
+            response_text, voice_directive = await cls._request_chat_completion(text, tools)
             if response_text:
                 cls._response_texts[run_id] = response_text
                 cls._response_voice_directives[run_id] = voice_directive
@@ -304,13 +319,13 @@ class OpenAIManager:
 
     @classmethod
     async def _request_chat_completion(
-        cls, text: str
+        cls, text: str, tools: ConversationTools | None = None
     ) -> tuple[str | None, VoiceDirective | None]:
         session_key = cls._session_key
         store = cls._history_store
         saved = await store.load(session_key) if store else None
         history = list(saved.messages) if saved else cls._sessions.setdefault(session_key, [])
-        messages = cls._build_messages(history, text)
+        messages: list[dict[str, Any]] = list(cls._build_messages(history, text))
         payload: dict[str, Any] = {
             "model": cls._model,
             "messages": messages,
@@ -324,20 +339,37 @@ class OpenAIManager:
 
         headers = cls._headers(saved.remote_key if saved else session_key)
 
-        async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=cls._timeout)
-        ) as session:
-            async with session.post(
-                cls._chat_completions_url(),
-                json=payload,
-                headers=headers,
-            ) as response:
-                body = await response.json(content_type=None)
-                if response.status >= 400:
-                    raise RuntimeError(f"Chat completion HTTP {response.status}")
+        if tools:
+            payload["tools"] = tools.definitions
+            payload["parallel_tool_calls"] = False
+        for round_index in range(5):
+            # 每轮新建 payload，保证发送后的请求与日志快照不被后续 append 改写。
+            payload["messages"] = list(messages)
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=cls._timeout)) as session:
+                async with session.post(cls._chat_completions_url(), json=payload, headers=headers) as response:
+                    body = await response.json(content_type=None)
+                    if response.status >= 400:
+                        raise RuntimeError(f"Chat completion HTTP {response.status}")
+            choices = body.get("choices", []) if isinstance(body, dict) else []
+            message = choices[0].get("message", {}) if choices and isinstance(choices[0], dict) else {}
+            calls = message.get("tool_calls") if isinstance(message, dict) else None
+            if not calls:
+                break
+            if tools is None or not isinstance(calls, list) or len(calls) != 1 or round_index == 4:
+                raise ValueError("工具调用未授权或超出本轮上限")
+            call = calls[0]
+            if not isinstance(call, dict) or not isinstance(call.get("id"), str) or not isinstance(call.get("function"), dict):
+                raise ValueError("工具调用格式无效")
+            function = call["function"]
+            result = await tools.invoke(call["id"], function.get("name", ""), function.get("arguments", ""))
+            messages.append({"role": "assistant", "content": message.get("content"), "tool_calls": calls})
+            messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result, ensure_ascii=False)})
+            payload = {**payload}
 
         response_text, response_directive = cls._extract_response_details(body)
         if response_text:
+            if tools:
+                response_text = tools.feedback(response_text)
             cls._append_history(history, text, response_text)
             if store and saved:
                 await store.save(saved, history)
@@ -461,7 +493,7 @@ class OpenAIManager:
         from core.services.tts.router import TTSRouter
 
         resolved_tts_speaker = tts_speaker or cls.get_tts_speaker_for_session_key()
-        await TTSRouter.play(
+        return await TTSRouter.play(
             text,
             configured_provider=cls._tts_provider,
             tts_speaker=resolved_tts_speaker,

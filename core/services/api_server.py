@@ -12,7 +12,7 @@ from typing import Any
 
 import open_xiaoai_server
 from aiohttp import BodyPartReader, web
-from core.ref import get_speaker, get_xiaoai
+from core.ref import get_app, get_speaker, get_xiaoai
 from core.services.tts.doubao import DoubaoTTS
 from core.services.tts.voice import VoiceDirective
 from core.services.native_bridge import NativeBridgeService, OperationOutcome
@@ -36,7 +36,8 @@ class APIServer:
             "XIAOAI_OPERATION_DB",
             self.config.get_app_config("xiaoai.operation_db", "app/xiaoai/operations.sqlite3"),
         )
-        self.native_bridge = NativeBridgeService(
+        app = get_app()
+        self.native_bridge = app.native_bridge if app is not None else NativeBridgeService(
             OperationRecords(operation_db), lambda: get_speaker(), evidence=operation_evidence
         )
         self._setup_routes()

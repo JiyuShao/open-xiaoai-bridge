@@ -50,7 +50,7 @@ class TTSRouter:
         output_mode: str = "play",
         request_sink: Callable[[dict[str, Any]], Any] | None = None,
         log_prefix: str = "TTS",
-    ) -> None:
+    ) -> bool:
         """Synthesize and play text, falling back to XiaoAI native TTS."""
         provider = cls.resolve_provider(configured_provider, tts_speaker)
         try:
@@ -65,14 +65,14 @@ class TTSRouter:
                     voice_directive=voice_directive,
                     request_sink=request_sink,
                 )
-                return
+                return True
             if provider == "xiaoai":
                 from core.ref import get_speaker
 
                 speaker = get_speaker()
                 if speaker:
-                    await speaker.play(text=text, blocking=True)
-                return
+                    return bool(await speaker.play(text=text, blocking=True))
+                return False
 
             if provider == "doubao":
                 await cls._play_doubao(
@@ -82,21 +82,22 @@ class TTSRouter:
                     playback_token=playback_token,
                     voice_directive=voice_directive,
                 )
-                return
+                return True
 
             await cls._play_openai_compatible(
                 text,
                 provider=provider,
                 tts_speaker=tts_speaker,
             )
+            return True
         except Exception as exc:
             logger.error(
                 f"[{log_prefix}] Error playing response with TTS: "
                 f"{type(exc).__name__}: {exc}"
             )
             if output_mode == "record":
-                return
-            await cls._fallback_to_xiaoai(text, log_prefix=log_prefix)
+                return False
+            return await cls._fallback_to_xiaoai(text, log_prefix=log_prefix)
 
     @classmethod
     async def _record_request(
@@ -209,6 +210,7 @@ class TTSRouter:
         provider: str,
         tts_speaker: str | None,
     ) -> None:
+        tts_class: type[OpenAITTS]
         if provider == "mlx_audio":
             tts_class = MLXAudioTTS
             config_key = "tts.mlx_audio"
@@ -279,12 +281,13 @@ class TTSRouter:
                     )
 
     @classmethod
-    async def _fallback_to_xiaoai(cls, text: str, *, log_prefix: str) -> None:
+    async def _fallback_to_xiaoai(cls, text: str, *, log_prefix: str) -> bool:
         try:
             from core.ref import get_speaker
 
             speaker = get_speaker()
             if speaker:
-                await speaker.play(text=text, blocking=True)
+                return bool(await speaker.play(text=text, blocking=True))
         except Exception as exc:
             logger.error(f"[{log_prefix}] XiaoAI TTS fallback failed: {exc}")
+        return False

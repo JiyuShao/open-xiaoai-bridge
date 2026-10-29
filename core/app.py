@@ -106,6 +106,8 @@ class MainApp:
         self._enable_openai = enable_openai
         self._enable_qwenpaw = enable_qwenpaw
 
+        self._native_bridge = None
+
         # Device state
         self.device_state = DeviceState.IDLE
         self.current_text = ""
@@ -149,6 +151,17 @@ class MainApp:
             return await self._native_wake.wakeup(get_speaker(), text, source)
         from core.wakeup_session import EventManager
         return await EventManager.wakeup(text, source)
+
+    @property
+    def native_bridge(self):
+        """HTTP 与语音工具共用一个审计/去重实例，避免把在途请求误判重启。"""
+        if self._native_bridge is None:
+            from core.services.native_bridge import NativeBridgeService
+            from core.services.operation_records import OperationRecords
+            path = os.environ.get("XIAOAI_OPERATION_DB", self.config.get_app_config(
+                "xiaoai.operation_db", "app/xiaoai/operations.sqlite3"))
+            self._native_bridge = NativeBridgeService(OperationRecords(path), get_speaker)
+        return self._native_bridge
 
     @property
     def protocol(self):
