@@ -1,0 +1,26 @@
+# 只运行Mock验收；镜像仅提供Python依赖，源码来自独立只读目录。
+name: xiaoai-doubao-validation
+services:
+  tests:
+    image: xiaoai-native-wake:validation
+    container_name: xiaoai-doubao-validation
+    network_mode: none
+    user: '65534:65534'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m
+    working_dir: /workspace
+    volumes:
+      - ${VALIDATION_SOURCE:?独立测试源码目录}:/workspace:ro
+      - ${VALIDATION_ARTIFACTS:?独立测试产物目录}:/artifacts
+    environment:
+      OPEN_XIAOAI_TOKEN: ''
+      OPENCLAW_LIVE_TEST: '0'
+      PYTHONDONTWRITEBYTECODE: '1'
+    entrypoint: ['/app/.venv/bin/python']
+    command: ['-m', 'scripts.run_silent_validation', '--output', '/artifacts']
+    restart: 'no'
+    cpus: 2
+    mem_limit: 3g
