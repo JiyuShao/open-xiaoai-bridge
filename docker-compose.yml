@@ -16,5 +16,9 @@ services:
       - ./config.py:/app/config.py
       - ./openclaw:/app/openclaw
       - ./models:/app/core/models
+      - xiaoai_operations:/app/app/xiaoai
     stdin_open: true
     tty: true      
+
+volumes:
+  xiaoai_operations:

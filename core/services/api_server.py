@@ -11,10 +11,12 @@ from collections.abc import Coroutine
 from typing import Any
 
 import open_xiaoai_server
-from aiohttp import web
+from aiohttp import BodyPartReader, web
 from core.ref import get_speaker, get_xiaoai
 from core.services.tts.doubao import DoubaoTTS
 from core.services.tts.voice import VoiceDirective
+from core.services.native_bridge import NativeBridgeService, OperationOutcome
+from core.services.operation_records import OperationRecords
 from core.utils.config import ConfigManager
 from core.utils.logger import logger
 
@@ -22,13 +24,21 @@ from core.utils.logger import logger
 class APIServer:
     """HTTP API Server to control XiaoZhi speaker remotely"""
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 8080):
+    def __init__(self, host: str = "0.0.0.0", port: int = 8080, *, operation_evidence: str = "device_interface"):
         self.host = host
         self.port = port
         self.config = ConfigManager.instance()
         self.app = web.Application()
         self.runner = None
         self.site = None
+        self._announcement_tokens: set[int] = set()
+        operation_db = os.environ.get(
+            "XIAOAI_OPERATION_DB",
+            self.config.get_app_config("xiaoai.operation_db", "app/xiaoai/operations.sqlite3"),
+        )
+        self.native_bridge = NativeBridgeService(
+            OperationRecords(operation_db), lambda: get_speaker(), evidence=operation_evidence
+        )
         self._setup_routes()
 
     def _setup_routes(self):
@@ -43,6 +53,17 @@ class APIServer:
         # TTS endpoints
         self.app.router.add_post("/api/tts/doubao", self.handle_tts_doubao)
         self.app.router.add_get("/api/tts/doubao_voices", self.handle_tts_voices)
+        self.app.router.add_post("/api/xiaoai/command", self.handle_xiaoai_command)
+        self.app.router.add_post(
+            "/api/xiaoai/{operation:announce|status|interrupt|wakeup}", self.handle_xiaoai_control
+        )
+        self.app.router.add_get("/api/xiaoai/operations", self.handle_xiaoai_operations)
+        self.app.router.add_get(
+            "/api/xiaoai/operations/{request_id}", self.handle_xiaoai_operation
+        )
+        self.app.router.add_delete(
+            "/api/xiaoai/operations/{request_id}", self.handle_delete_xiaoai_operation
+        )
 
     def _create_background_task(
         self,
@@ -71,11 +92,171 @@ class APIServer:
 
     async def stop(self):
         """Stop the HTTP server"""
+        self._cancel_announcements()
         if self.runner:
             await self.runner.cleanup()
             logger.info("[APIServer] HTTP server stopped")
 
     # ============ Handlers ============
+
+    async def handle_xiaoai_command(self, request: web.Request) -> web.Response:
+        """经受控接口提交一条自然语言原生指令，并返回持久化记录。"""
+        try:
+            data = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response(
+                {"success": False, "error": "JSON body must be an object"}, status=400
+            )
+
+        try:
+            record = await self.native_bridge.submit(
+                data.get("command", ""),
+                session_key=data.get("session_key", "agent:xiaoai-doubao:default"),
+                request_id=data.get("request_id"),
+                silent=data.get("silent", True),
+                timeout_ms=data.get("timeout_ms", 10000),
+            )
+        except ValueError as exc:
+            return web.json_response({"success": False, "error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.error(f"[APIServer] Native XiaoAI command failed: {type(exc).__name__}")
+            return web.json_response(
+                {"success": False, "error": type(exc).__name__}, status=500
+            )
+
+        status = 202 if record.status == "accepted" else 200
+        return web.json_response(
+            {"success": record.status == "accepted", "operation": record.as_dict()},
+            status=status,
+        )
+
+    async def handle_xiaoai_control(self, request: web.Request) -> web.Response:
+        """仅接受已注册的播报、状态、打断和调度唤醒动作，并记录实际结果。"""
+        try:
+            data = await request.json()
+            if not isinstance(data, dict):
+                raise ValueError("JSON body must be an object")
+            action = request.match_info["operation"]
+            command = data.get("text", "") if action == "announce" else action
+            parameters: dict[str, Any] = {}
+            if action == "announce":
+                if not isinstance(command, str) or not command.strip() or len(command) > 1000:
+                    raise ValueError("text 必须是 1 到 1000 字的非空文本")
+                speed = data.get("speed", 1.0)
+                if type(speed) not in (int, float) or not 0.8 <= speed <= 2.0:
+                    raise ValueError("speed 必须在 0.8 到 2.0 之间")
+                speaker_id = data.get("speaker_id")
+                if speaker_id is not None and (not isinstance(speaker_id, str) or len(speaker_id) > 128):
+                    raise ValueError("speaker_id 无效")
+                # 参数白名单不会把工具请求中的凭据或其他字段写入操作记录。
+                voice = VoiceDirective.from_mapping(data)
+                parameters = {
+                    "speaker_id": speaker_id, "speed": speed,
+                    "context_texts": voice.context_texts() if voice else None,
+                    "emotion": voice.emotion if voice else None,
+                    "explicit_language": voice.explicit_language if voice else None,
+                    "explicit_dialect": voice.explicit_dialect if voice else None,
+                }
+            elif action == "wakeup":
+                if type(data.get("silent", True)) is not bool:
+                    raise ValueError("silent 必须是布尔值")
+                parameters = {"silent": data.get("silent", True)}
+
+            async def invoke() -> OperationOutcome:
+                speaker = get_speaker()
+                if speaker is None:
+                    return OperationOutcome("rejected", False, error="speaker_unavailable", confirmation="rejected")
+                if action == "status":
+                    playing = await speaker.get_playing()
+                    return OperationOutcome("completed", True, {"status": playing, "cached": True}, confirmation="cached_status")
+                if action == "interrupt":
+                    self._cancel_announcements()
+                    await speaker.stop_device_audio()
+                    xiaoai = get_xiaoai()
+                    if xiaoai and hasattr(xiaoai, "stop_conversation"):
+                        xiaoai.stop_conversation()
+                    return OperationOutcome("accepted", True, {"control_returned": True}, confirmation="accepted_only")
+                if action == "wakeup":
+                    accepted = await speaker.wake_up(awake=True, silent=parameters["silent"])
+                    return OperationOutcome(
+                        "accepted" if accepted else "unknown", True if accepted else None,
+                        {"control_returned": accepted}, confirmation="accepted_only" if accepted else "unknown",
+                    )
+                await self._announce_xiaoai(command, parameters)
+                return OperationOutcome("accepted", True, {"playback_call_returned": True}, confirmation="accepted_only")
+
+            record = await self.native_bridge.run_operation(
+                f"xiaoai_{action}", command, parameters, invoke,
+                session_key=data.get("session_key", "agent:xiaoai-doubao:default"),
+                request_id=data.get("request_id"), timeout_ms=data.get("timeout_ms", 10000),
+            )
+        except (ValueError, json.JSONDecodeError) as exc:
+            return web.json_response({"success": False, "error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.error(f"[APIServer] Controlled operation failed: {type(exc).__name__}")
+            return web.json_response({"success": False, "error": type(exc).__name__}, status=500)
+        return web.json_response(
+            {"success": record.status in ("accepted", "completed"), "operation": record.as_dict()},
+            status=202 if record.status == "accepted" else 200,
+        )
+
+    async def _announce_xiaoai(self, text: str, parameters: dict[str, Any]) -> None:
+        """使用服务端豆包凭据进行阻塞播报，不接受 Agent 提供凭据或文件路径。"""
+        config = self.config.get_app_config("tts.doubao", {})
+        if not config.get("app_id") or not config.get("access_key"):
+            raise ValueError("Doubao TTS credentials not configured")
+        speaker_id = parameters["speaker_id"] or config.get("default_speaker", "zh_female_vv_uranus_bigtts")
+        tts = DoubaoTTS(app_id=config["app_id"], access_key=config["access_key"],
+                        resource_id=config.get("resource_id"), speaker=speaker_id)
+        play = open_xiaoai_server.tts_stream_play if config.get("stream", False) else open_xiaoai_server.tts_play
+        self._cancel_announcements()
+        token = open_xiaoai_server.begin_playback_session()
+        self._announcement_tokens.add(token)
+        try:
+            await play(
+                text, app_id=config["app_id"], access_key=config["access_key"], resource_id=tts.resource_id,
+                speaker=speaker_id, speed=parameters["speed"], format=tts.resolve_audio_format(text), sample_rate=24000,
+                emotion=parameters["emotion"], context_texts=parameters["context_texts"], playback_token=token,
+                explicit_language=parameters["explicit_language"], explicit_dialect=parameters["explicit_dialect"],
+            )
+            if token not in self._announcement_tokens:
+                raise RuntimeError("announcement_interrupted")
+        finally:
+            # 只取消自己持有的令牌，不能停止后来开始的其他播报。
+            open_xiaoai_server.stop_tts_playback(token)
+            self._announcement_tokens.discard(token)
+
+    def _cancel_announcements(self) -> None:
+        """使受控播报令牌失效，原生异步合成即使迟到也不能继续发送音频。"""
+        for token in self._announcement_tokens:
+            open_xiaoai_server.stop_tts_playback(token)
+        self._announcement_tokens.clear()
+
+    async def handle_xiaoai_operations(self, request: web.Request) -> web.Response:
+        try:
+            limit = int(request.query.get("limit", "50"))
+        except ValueError:
+            return web.json_response({"success": False, "error": "limit 无效"}, status=400)
+        records = await self.native_bridge.list(
+            limit=limit, session_key=request.query.get("session_key")
+        )
+        return web.json_response(
+            {"success": True, "operations": [record.as_dict() for record in records]}
+        )
+
+    async def handle_xiaoai_operation(self, request: web.Request) -> web.Response:
+        record = await self.native_bridge.get(request.match_info["request_id"])
+        if record is None:
+            return web.json_response({"success": False, "error": "operation_not_found"}, status=404)
+        return web.json_response({"success": True, "operation": record.as_dict()})
+
+    async def handle_delete_xiaoai_operation(self, request: web.Request) -> web.Response:
+        deleted = await self.native_bridge.delete(request.match_info["request_id"])
+        if not deleted:
+            return web.json_response({"success": False, "error": "operation_not_found"}, status=404)
+        return web.json_response({"success": True, "deleted": True})
 
     async def handle_play_text(self, request: web.Request) -> web.Response:
         """
@@ -207,7 +388,7 @@ class APIServer:
 
             # Get the file field
             field = await reader.next()
-            if not field or field.name != "file":
+            if not isinstance(field, BodyPartReader) or field.name != "file":
                 return web.json_response(
                     {"success": False, "error": "Missing required field: file"},
                     status=400

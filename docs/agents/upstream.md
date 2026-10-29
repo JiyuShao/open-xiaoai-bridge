@@ -27,6 +27,8 @@ open-xiaoai-bridge/
 │   ├── services/
 │   │   ├── speaker.py             # SpeakerManager 音箱硬件控制
 │   │   ├── api_server.py          # HTTP REST API（aiohttp）
+│   │   ├── native_bridge.py       # 受控工具操作、去重与确认边界
+│   │   ├── operation_records.py   # SQLite 操作记录（异步线程 I/O）
 │   │   ├── tts/router.py           # 统一 TTS provider 路由与播放
 │   │   ├── audio/
 │   │   │   ├── stream.py          # GlobalStream 全局音频流（多路输入广播）
@@ -54,7 +56,7 @@ open-xiaoai-bridge/
 │       ├── macros.rs              # 辅助宏
 │       └── tts/                   # TTS 音频处理（流式、PCM 直通、MP3 解码）
 ├── app/openclaw/                  # OpenClaw 设备身份存储（Ed25519 密钥）
-├── skills/xiaoai-tts/             # Agent 工具：通过 HTTP API 控制小爱播放
+├── skills/xiaoai-bridge/          # Agent 工具：受控指令、播报、状态与打断
 └── tests/                         # 测试脚本
 ```
 

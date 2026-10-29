@@ -301,8 +301,8 @@ APP_CONFIG = {
         "rule_prompt": "注意：将结果处理成纯文字版，不要返回任何 markdown 格式，也不要包含任何代码块，并将字数控制在300字以内",
         # rule_prompt_for_skill: 用于「Agent 自主播报」场景（方式三）
         #   - send_to_openclaw() 会自动追加
-        #   - 告诉 Agent 需要调用 xiaoai-tts skill 来播报，因为服务端不会自动播放
-        "rule_prompt_for_skill": "注意：这条消息是主人通过小爱音箱发送的，他看不到你回复的文字，调用 `xiaoai-tts` skill 播报出来。字数控制在300字以内"
+        #   - 告诉 Agent 调用 xiaoai-bridge 的 xiaoai_announce 来播报
+        "rule_prompt_for_skill": "注意：这条消息是主人通过小爱音箱发送的，他看不到你回复的文字，调用 `xiaoai-bridge` skill 的 `xiaoai_announce` 播报出来。字数控制在300字以内"
     },
     # OpenAI-compatible Service Configuration
     # 可接入 Hermes Agent API Server、OpenAI、Ollama、LM Studio 等兼容 /v1/chat/completions 的服务

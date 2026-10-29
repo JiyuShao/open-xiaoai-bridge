@@ -47,6 +47,9 @@ output/
 
 config-local.py
 
+# 本地操作记录（容器中使用独立持久化卷）
+app/xiaoai/
+
 **/models
 
 # Local project and audit artifacts

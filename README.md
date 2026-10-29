@@ -201,7 +201,7 @@ flowchart TB
     subgraph APIClients["🌐 API 客户端"]
         direction TB
         Curl["curl / HTTP 客户端"]
-        XiaoaiTTS["skills/xiaoai-tts"]
+        XiaoaiTTS["skills/xiaoai-bridge"]
         Curl ~~~ XiaoaiTTS
     end
 
@@ -300,7 +300,7 @@ flowchart TB
 ```
 小爱指令 "让龙虾 xxx" → before_wakeup() → send_to_openclaw()
 → OpenClawManager → Gateway → Agent
-→ 自动 TTS 播报 或 Agent 主动调用 xiaoai-tts skill
+→ 自动 TTS 播报 或 Agent 主动调用 xiaoai-bridge skill
 ```
 
 **🦞 OpenClaw 连续对话**
@@ -710,7 +710,7 @@ if "让龙虾" in text:
 
 #### 📡 方式三：单次对话（Agent 自主播报）
 
-只发送消息，不自动播报，由 Agent 调用 `xiaoai-tts` skill 自主播报：
+只发送消息，不自动播报，由 Agent 调用 `xiaoai-bridge` skill 自主播报：
 
 ```python
 if "告诉龙虾" in text:
@@ -836,7 +836,7 @@ async def after_wakeup(speaker, source=None, session_key=None):
 **为什么需要两个 prompt？**
 
 - **`rule_prompt`**：服务端会自动 TTS 播放，只需告诉 Agent 输出纯文字、控制字数
-- **`rule_prompt_for_skill`**：服务端不会自动播放，需要告诉 Agent **主动调用 `xiaoai-tts` skill** 来播报
+- **`rule_prompt_for_skill`**：服务端不会自动播放，需要告诉 Agent **主动调用 `xiaoai-bridge` skill** 来播报
 
 示例配置：
 
@@ -845,7 +845,7 @@ async def after_wakeup(speaker, source=None, session_key=None):
     # 自动播放/连续对话用：约束输出格式
     "rule_prompt": "注意：将结果处理成纯文字版，不要返回任何 markdown 格式，也不要包含任何代码块，并将字数控制在300字以内",
     # Agent 自主播报用：告诉 Agent 需要调用 skill
-    "rule_prompt_for_skill": "注意：这条消息是主人通过小爱音箱发送的，他看不到你回复的文字，调用 `xiaoai-tts` skill 播报出来。字数控制在300字以内",
+    "rule_prompt_for_skill": "注意：这条消息是主人通过小爱音箱发送的，他看不到你回复的文字，调用 `xiaoai-bridge` skill 播报出来。字数控制在300字以内",
 }
 ```
 
@@ -889,9 +889,15 @@ async def after_wakeup(speaker, source=None, session_key=None):
 
 ### 🧩 Skills
 
-`skills/xiaoai-tts/` — Agent 通过 HTTP API 控制小爱播放语音，支持小爱内置 TTS 和豆包 TTS。
+`skills/xiaoai-bridge/` — Agent 通过受控 HTTP API 提交静默原生指令、播报通知、查询状态和打断，并查询持久化操作记录。正式动作名为 `xiaoai_command`、`xiaoai_announce`、`xiaoai_status`、`xiaoai_interrupt`；唤醒仅保留为 Bridge 调度 API。
 
-📖 详见 [SKILL.md](skills/xiaoai-tts/SKILL.md)
+工具调用使用 `POST /api/xiaoai/{command|announce|status|interrupt}`。每次新的动作使用新的 `request_id`；重复投递沿用原标识，不重复执行。同标识对应不同参数会拒绝。通过 `GET /api/xiaoai/operations` 或 `GET /api/xiaoai/operations/{request_id}` 查询，用户主动清理使用 `DELETE /api/xiaoai/operations/{request_id}`（在途记录不可删除）。
+
+原生返回的 `accepted` 只证明接口受理，超时、断线或重启中断为 `unknown`，都不能报告业务完成，也不会自动重试。记录保留脱敏后的协议返回；`parameters.evidence=mock` 明确标记测试结果，真实静默效果及业务结果采集仍待设备验收。
+
+操作记录默认位于 `app/xiaoai/operations.sqlite3`；可设置 `XIAOAI_OPERATION_DB` 或 `xiaoai.operation_db` 覆盖。一个 Bridge 进程独占一个记录库，SQLite I/O 在线程中执行。Compose 已配置 `xiaoai_operations` 卷，容器重建保留记录，删除卷会清除记录。测试使用独立临时库与假传输，不运行或重启生产容器。
+
+📖 详见 [SKILL.md](skills/xiaoai-bridge/SKILL.md)
 
 ***
 

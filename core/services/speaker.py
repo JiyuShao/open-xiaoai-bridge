@@ -1,5 +1,7 @@
 import asyncio
 import os
+import json
+import shlex
 from typing import Literal
 
 import open_xiaoai_server
@@ -157,13 +159,25 @@ class SpeakerManager:
             silent: 是否静默执行
         """
 
+        res = await self.ask_xiaoai_result(text, silent=silent)
+        try:
+            payload = json.loads(res.stdout)
+            return res.exit_code == 0 and isinstance(payload, dict) and payload.get("code") == 0
+        except (ValueError, TypeError):
+            return False
+
+    async def ask_xiaoai_result(self, text: str, silent: bool = False) -> CommandResult:
+        """提交同一受控指令并保留原始传输返回，供操作记录区分受理与未知。"""
         data = {"nlp": 1, "nlp_text": text}
         if not silent:
             data["tts"] = 1
 
-        command = f"ubus call mibrain ai_service '{json_encode(data)}'"
+        payload = json.dumps(data, ensure_ascii=False)
+        command = f"ubus call mibrain ai_service {shlex.quote(payload)}"
         res = await self.run_shell(command)
-        return '"code": 0' in res.stdout
+        if res is None:
+            return CommandResult("", "missing_transport_response", -1)
+        return res
 
     async def abort_xiaoai(self):
         """
