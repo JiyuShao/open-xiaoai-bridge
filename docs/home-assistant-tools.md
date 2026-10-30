@@ -1,10 +1,20 @@
 # 小爱豆包的 Home Assistant 工具
 
-当前验收全部使用 Mock；没有配置真实 HA/Hermes、生产凭据或生产容器。`profiles/xiaoai-doubao.json` 是权限清单和测试合约，尚未安装为真实 Hermes profile。模型只能使用请求中提供的语义工具；未知名称、任意参数、管理接口和重定向均被拒绝。
+写操作验收继续使用 Mock；真实 Hermes 和 Home Assistant 只读连接可以单独启用。`profiles/xiaoai-doubao.json` 与 `profiles/xiaoai-doubao-readonly.json` 是本地权限清单和测试合同，不能通过 OpenAI-compatible 请求切换 Hermes 的服务端活动 profile。Hermes 当前把活动 profile 作为服务端全局配置；Bridge 通过真实 `/v1/chat/completions` 接入，并在本地按对应合同过滤工具。部署前需在 Hermes 服务端选择与 Bridge 配置一致的 profile。模型只能使用请求中提供的语义工具；未知名称、任意参数、管理接口和重定向均被拒绝。
 
 ## 配置与边界
 
-私有 `home_assistant` 配置包含 `enabled`、不带凭据/路径的 `base_url`、运行时 `token`、`entities`、可选 `workflows_path`（默认 `app/home-workflows.db`）。实体声明真实 `name`、`native: true|false`；未知原生映射不猜测。传感器可声明 `unit`、电量累计可声明 `history_kind: energy`，非标准状态/事件需明确列出 `states`/`events`。凭据不进入提示词、记录或普通日志。
+私有 `home_assistant` 配置包含 `enabled`、不带凭据/路径的 `base_url`、运行时 `token`、`entities`、可选 `read_only` 和 `workflows_path`（默认 `app/home-workflows.db`）。实体声明真实 `name`、`native: true|false`；未知原生映射不猜测。传感器可声明 `unit`、电量累计可声明 `history_kind: energy`，非标准状态/事件需明确列出 `states`/`events`。凭据不进入提示词、记录或普通日志。
+
+`read_only: true` 时只向 Hermes 暴露 `ha_entities`、`ha_state`、`ha_history`、`ha_services`；不启动定时任务和自动化事件监听，也拒绝 `device_control`、规则、任务及任何写入。真实服务只读检查使用：
+
+```sh
+HERMES_BASE_URL=http://.../v1 HA_BASE_URL=http://... \
+  HERMES_API_KEY=... HA_TOKEN=... \
+  python -m scripts.verify_live_readonly
+```
+
+可选 `HA_ENTITY_IDS=light.living,sensor.temperature` 检查指定状态，`HA_HISTORY_ENTITY=sensor.temperature` 检查该实体过去24小时历史；未提供历史实体时不对历史作结论。`--chat-text` 只向真实 Hermes 发送无工具连通性请求；脚本不调用 HA 写接口、Bridge 或音频播放。结果只打印状态码、实体状态和数量，不打印凭据。`X-Hermes-Session-Key` 只隔离服务端记忆作用域，不能当作 profile 权限隔离证明。
 
 启动时先验证配置再启动设备监听。定时任务和自动化提醒订阅由 `MainApp.loop` 托管，退出时取消；运行库应由单一 Bridge 进程独占，不能将同一 SQLite 文件提供给多个运行实例。启用这些功能会增加到点播报路径；当前只运行隔离 Mock，没有将其部署到生产。
 
@@ -32,4 +42,4 @@
 
 ## 验收限制
 
-文件音频和 Mock HA/Hermes/TTS 已覆盖控制、历史、场景、跨轮确认、提醒与退出。模型理解能力、真实 Hermes 工具权限、真实 HA 实体/配置接口/触发结果、豆包音色、音箱和远场均未验收。所有音频进入测试接收器或文件，Mock 的完成只代表替身状态已观测；没有应用 Recorder、变更生产配置或连接真实 Client。
+文件音频和 Mock 写操作已覆盖控制、历史、场景、跨轮确认、提醒与退出。真实只读 Hermes/HA 检查通过 `scripts.verify_live_readonly` 进行；真实 Hermes 服务端 profile 是否已按合同配置、HA 写接口/触发结果、豆包音色、音箱和远场仍未验收。所有音频进入测试接收器或文件，Mock 写操作的完成只代表替身状态已观测；没有应用 Recorder、变更生产配置或连接音箱。

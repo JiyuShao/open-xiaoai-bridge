@@ -1,9 +1,12 @@
 """受控HA入口对假的HTTP服务；不读取真实凭据或访问家庭设备。"""
 
 from contextlib import asynccontextmanager
+import importlib.util
+import os
 import tempfile
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from aiohttp import web
 from aiohttp.test_utils import TestServer
@@ -177,6 +180,27 @@ class HomeAssistantControlTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result['parameters']['decision']['route'],'native')
             self.assertFalse(any(call[0]=='POST' for call in calls))
 
+    async def test_read_only_service_exposes_reads_and_rejects_mutations(self):
+        from core.services.home_assistant import HomeAssistantService
+        from core.services.conversation_tools import ConversationTools
+        import json
+        async with home_environment() as (service,calls,states):
+            readonly=HomeAssistantService(service.client,service.allowed,service.bridge,read_only=True)
+            self.assertIsNone(readonly.workflows)
+            self.assertIsNone(readonly.tasks)
+            names=[item['function']['name'] for item in readonly.definitions]
+            self.assertEqual(set(names),{'ha_entities','ha_state','ha_history','ha_services'})
+            conversation=ConversationTools(readonly.bridge,'test',home=readonly,user_text='打开灯')
+            self.assertNotIn('xiaoai_command',[item['function']['name'] for item in conversation.definitions])
+            with self.assertRaises(ValueError):
+                await conversation.invoke('native','xiaoai_command',json.dumps({'command':'打开灯','playback':'short'}))
+            with self.assertRaises(ValueError):
+                await readonly.invoke('device_control',{'entity_id':'light.living','action':'turn_on','route':'auto'},'test','打开灯')
+            with self.assertRaises(ValueError):
+                await readonly.invoke('ha_rule_propose',{},'test','创建规则')
+            with self.assertRaises(ValueError):
+                await readonly.control('light.living','turn_on',{},session_key='test',user_text='打开灯')
+
 
 class HomeAnnouncementProtocolTest(unittest.IsolatedAsyncioTestCase):
     async def test_websocket_auth_and_subscription_only_yield_bridge_events(self):
@@ -208,3 +232,111 @@ class HomeAnnouncementProtocolTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('mock-secret',str(results))
         finally:
             await server.close()
+
+
+class LiveReadonlyConfigTest(unittest.TestCase):
+    @staticmethod
+    def _load_mixed_config(environment):
+        path = Path(__file__).parents[1] / "config.mixed-wake.py"
+        spec = importlib.util.spec_from_file_location("xiaoai_mixed_config_test", path)
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(os.environ, environment, clear=True):
+            spec.loader.exec_module(module)
+        return module.APP_CONFIG
+
+    def test_profile_matches_ha_enable_and_read_only_boundary(self):
+        disabled = self._load_mixed_config({})
+        self.assertFalse(disabled["home_assistant"]["enabled"])
+        self.assertEqual(disabled["openai"]["profile"], "xiaoai-doubao")
+
+        readonly = self._load_mixed_config({"HA_ENABLE": "1"})
+        self.assertTrue(readonly["home_assistant"]["enabled"])
+        self.assertTrue(readonly["home_assistant"]["read_only"])
+        self.assertEqual(readonly["openai"]["profile"], "xiaoai-doubao-readonly")
+        self.assertEqual(readonly["openai"]["session_key"], "agent:xiaoai-doubao:readonly")
+        self.assertIn("只能读取 Home Assistant", readonly["openai"]["system_prompt"])
+
+        writable = self._load_mixed_config({"HA_ENABLE": "1", "HA_READ_ONLY": "0"})
+        self.assertTrue(writable["home_assistant"]["enabled"])
+        self.assertFalse(writable["home_assistant"]["read_only"])
+        self.assertEqual(writable["openai"]["profile"], "xiaoai-doubao")
+        self.assertIn("原生操作", writable["openai"]["system_prompt"])
+
+        with self.assertRaises(ValueError):
+            self._load_mixed_config({"HA_ENABLE": "1", "HERMES_PROFILE": "xiaoai-doubao"})
+        with self.assertRaises(ValueError):
+            self._load_mixed_config({"HERMES_PROFILE": "xiaoai-doubao-readonly"})
+
+    def test_hermes_url_only_allows_origin_or_v1_without_credentials(self):
+        from scripts.verify_live_readonly import _normalize_hermes_url
+        self.assertEqual(_normalize_hermes_url('http://hermes:8642/v1'),
+                         ('http://hermes:8642','http://hermes:8642/v1'))
+        for value in ('http://user:pass@hermes:8642/v1', 'http://hermes:8642/v1?token=x',
+                      'http://hermes:8642/private/path'):
+            with self.assertRaises(ValueError):
+                _normalize_hermes_url(value)
+
+
+class LiveReadonlyProbeTest(unittest.IsolatedAsyncioTestCase):
+    async def test_probe_rejects_malformed_home_assistant_collections(self):
+        from scripts import verify_live_readonly
+
+        class MalformedClient:
+            def __init__(self, _base_url, _token):
+                pass
+
+            async def states(self):
+                return {"error": "proxy"}
+
+            async def services(self):
+                return []
+
+        with patch("core.services.home_assistant.HomeAssistantClient", MalformedClient):
+            with self.assertRaisesRegex(RuntimeError, "invalid_ha_states_response"):
+                await verify_live_readonly._home_assistant("http://ha", "token", [])
+
+    async def test_probe_rejects_selected_entity_mismatch(self):
+        from scripts import verify_live_readonly
+
+        class MismatchedClient:
+            def __init__(self, _base_url, _token):
+                pass
+
+            async def states(self):
+                return [{"entity_id": "light.living"}]
+
+            async def services(self):
+                return [{"domain": "light", "services": {}}]
+
+            async def state(self, _entity_id):
+                return {"entity_id": "switch.other", "state": "on"}
+
+        with patch("core.services.home_assistant.HomeAssistantClient", MismatchedClient):
+            with self.assertRaisesRegex(RuntimeError, "ha_state_entity_mismatch"):
+                await verify_live_readonly._home_assistant(
+                    "http://ha", "token", ["light.living"]
+                )
+
+    async def test_probe_checks_optional_history_without_writes(self):
+        from scripts import verify_live_readonly
+
+        class HistoryClient:
+            def __init__(self, _base_url, _token):
+                self.history_calls = []
+
+            async def states(self):
+                return [{"entity_id": "sensor.temperature"}]
+
+            async def services(self):
+                return [{"domain": "sensor", "services": {}}]
+
+            async def history(self, entity_id, start, end):
+                self.history_calls.append((entity_id, start, end))
+                return [[{"entity_id": entity_id, "state": "22"}]]
+
+        with patch("core.services.home_assistant.HomeAssistantClient", HistoryClient):
+            result = await verify_live_readonly._home_assistant(
+                "http://ha", "token", [], "sensor.temperature"
+            )
+        self.assertTrue(result["history_checked"])
+        self.assertEqual(result["history_records"], 1)

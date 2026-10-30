@@ -519,8 +519,9 @@ python3 -m scripts.doubao_text_chat --message "新的话题" --new-session --sta
 `--mock-failure` 可选 `empty`、`http-error`、`timeout`、`unavailable`，验证失败后恢复；
 失败不会加入历史，也不会自动重发。`hardware_loaded` 正常应为 `false`。
 
-测试配置中的 `xiaoai-doubao` / “小爱豆包”仅是本地测试身份，未创建或切换真实 Hermes profile。
-真实 Hermes 的 profile、工具隔离、记忆协议和模型效果仍待独立验证。
+`config.mixed-wake.py` 的 OpenAI-compatible 通道可以直接接入真实 Hermes；运行时凭据只从环境变量读取。
+`profiles/xiaoai-doubao*.json` 是本地工具权限合同，Hermes 当前通过服务端全局活动 profile 配置权限，不能由一次 Chat Completions 请求切换。
+Bridge 仍会在本地过滤工具；`X-Hermes-Session-Key` 只用于记忆作用域，不能替代服务端 profile 隔离。真实 profile 与工具权限需在独立 Hermes 环境中核对。
 当前入口不连接真实 TTS、工具或音箱。兼容服务回复可以携带可选的 `voice` 元数据，
 由统一 TTS Router 校验后透传 `context_text`、`explicit_language`、`explicit_dialect`
 和 `emotion`；`session_preference=true` 只在当前进程 session 内延续，新会话会清除。

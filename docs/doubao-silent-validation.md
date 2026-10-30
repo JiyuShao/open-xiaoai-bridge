@@ -1,6 +1,6 @@
 # 小爱豆包静默验收
 
-2026-10-29，全部使用 Mock；没有真实 Hermes、HA、豆包合成、音箱或真人声学证据。
+2026-10-29 的写操作与音频验收全部使用 Mock；2026-10-30 新增真实 Hermes/HA 只读适配。没有执行真实 HA 写操作、Hermes 工具调用、豆包合成、音箱播放或真人声学验收。
 
 隔离入口：`docker-compose.doubao-validation.yml`。依赖镜像为服务器现有的 `xiaoai-native-wake:validation`；源码只读挂载，产物独立绑定。设置 `VALIDATION_SOURCE` 与 `VALIDATION_ARTIFACTS` 后运行该 Compose，产物目录须允许 UID 65534 写入。容器为非 root、无网络、无 capabilities、只读根目录、无 Docker socket 或生产目录、无生产凭据。隔离探针先验证无启用的非回环网卡/路由，并实测生产端口与公网均不可连接，才运行套件。内核可见但 DOWN 的隧道设备不等于可用网络。
 
@@ -28,7 +28,9 @@ python -m scripts.build_silent_bundle --output /tmp/xiaoai-doubao-mock.tar.gz
 
 此包包括启动回归需要的公开 config 和 Dockerfile，排除模型、私有环境文件、运行库和身份数据。服务器独立目录为 `/tmp/xiaoai-doubao-final-20261029/`，不覆盖生产项目目录。中间失败包含打包漏掉测试配置和Dockerfile，均属未完整测试素材，最终结果以目录内最新 summary.json 与 unittest.log 为准，不隐藏失败记录或把失败计为通过。
 
-真实接线仍待后续：Hermes profile安装与工具权限、实际模型记忆/声音元数据、HA配置API兼容性与自动化触发、Recorder365应用与真实容量基线、豆包真实合成、Rust WebSocket真实Client、音箱/声学/听感。当前Mock完成不代表这些项目已通过；未执行生产部署、配置写入、设备命令、播放或push。
+真实写接线仍待后续：Hermes profile安装与工具权限、实际模型记忆/声音元数据、HA配置API兼容性与自动化触发、Recorder365应用与真实容量基线、豆包真实合成、Rust WebSocket真实Client、音箱/声学/听感。当前 Mock 写操作完成不代表这些项目已通过；未执行生产部署、HA配置写入、设备命令、播放或push。
+
+2026-10-30：服务器只读探针显示 Hermes `/health` 为 200，`/v1/models` 为 401（API Key 已启用）；HA `/api/` 为 401（Token 已启用）。新增 `scripts/verify_live_readonly.py`：配置运行时凭据后，可读取真实 Hermes 健康/模型接口和 HA 实体、服务、状态、历史；`--chat-text` 仅发送无工具连通性消息。生产读写凭据未输出，写工具和音频仍保持 Mock。
 
 最终服务器完整套件同为167项（164通过、3跳过），summary.success=true；容器d4811acdcd3d，2026-10-29 13:14:26 UTC完成。额外12项启动测试通过，覆盖HA错误配置在设备监听前失败。
 

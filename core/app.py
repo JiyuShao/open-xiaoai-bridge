@@ -162,8 +162,16 @@ class MainApp:
         if self._home_assistant is None:
             from core.services.home_assistant import HomeAssistantClient, HomeAssistantService
             client = HomeAssistantClient(config.get("base_url", ""), config.get("token", ""))
-            self._home_assistant = HomeAssistantService(client, config.get("entities", {}), self.native_bridge)
-            self._home_assistant.configure_workflows(config.get("workflows_path", "app/home-workflows.db"), self._announce_home)
+            self._home_assistant = HomeAssistantService(
+                client,
+                config.get("entities", {}),
+                self.native_bridge,
+                read_only=config.get("read_only", False),
+            )
+            if not self._home_assistant.read_only:
+                self._home_assistant.configure_workflows(
+                    config.get("workflows_path", "app/home-workflows.db"), self._announce_home
+                )
         return self._home_assistant
 
     async def _announce_home(self, text):
@@ -318,7 +326,7 @@ class MainApp:
             QwenPawManager.initialize_from_config()
             asyncio.run_coroutine_threadsafe(QwenPawManager.connect(), self.loop)
 
-        if self._enable_openai and self.home_assistant is not None:
+        if self._enable_openai and self.home_assistant is not None and not self.home_assistant.read_only:
             self._home_task = asyncio.run_coroutine_threadsafe(self._run_home_tasks(), self.loop)
 
         # Start API Server if enabled

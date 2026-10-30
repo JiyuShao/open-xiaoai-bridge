@@ -96,7 +96,14 @@ class HomeAssistantService:
                'fan':('turn_on','turn_off'), 'cover':('open_cover','close_cover','stop_cover'),
                'lock':('lock','unlock'), 'climate':('turn_on','turn_off')}
 
-    def __init__(self, client: HomeAssistantClient, entities: dict[str, dict[str, Any]], bridge: NativeBridgeService):
+    def __init__(
+        self,
+        client: HomeAssistantClient,
+        entities: dict[str, dict[str, Any]],
+        bridge: NativeBridgeService,
+        *,
+        read_only: bool = False,
+    ):
         if not isinstance(entities,dict) or not entities or any(
             not isinstance(key,str) or len(key)>128 or key.count('.')!=1
             or not all(part.replace('_','').isalnum() for part in key.split('.'))
@@ -104,6 +111,7 @@ class HomeAssistantService:
             for key,value in entities.items()
         ):
             raise ValueError('HA需配置明确的实体和真实展示名称')
+        self.read_only = read_only is True
         self.workflows = None
         self.tasks = None
         self.client, self.allowed, self.bridge = client, dict(entities), bridge
@@ -112,6 +120,8 @@ class HomeAssistantService:
         self._confirmations: dict[str, tuple[str, dict, float]] = {}
 
     def configure_workflows(self, path, announce):
+        if self.read_only:
+            raise ValueError('home_assistant_read_only')
         from core.services.ha_workflows import HomeWorkflows
         from core.services.scheduled_tasks import ScheduledTasks
         self.workflows = HomeWorkflows(self,path,announce)
@@ -159,6 +169,8 @@ class HomeAssistantService:
         return entity_id.split('.')[0] in ('lock','climate') or meta.get('risk')=='high' or any(word in meta['name'] for word in ('燃气','热水器','取暖器','门锁'))
 
     async def control(self, entity_id, action, data, route='auto', *, session_key, user_text, confirmation_id=None, request_id=None):
+        if self.read_only:
+            raise ValueError('home_assistant_read_only')
         meta = self._entity(entity_id)
         domain = entity_id.split('.')[0]
         if action not in self.ACTIONS.get(domain,()) or route not in ('auto','native','home_assistant') or not isinstance(data,dict):
@@ -225,6 +237,11 @@ class HomeAssistantService:
             ('ha_pending','读取当前session尚待确认的提案；用户说确认后先查询，再用对应确认工具提交ID',{}),
             ('ha_services','列出允许的设备动作及副作用边界；不能调用管理接口',{}),
         )]
+        if self.read_only:
+            return [
+                item for item in read
+                if item["function"]["name"] in {"ha_entities", "ha_state", "ha_history", "ha_services"}
+            ]
         read.append({'type':'function','function':{'name':'device_control','description':'控制允许实体；服务端选择唯一原生/HA路径。歧义需询问，高风险需用户下一轮明确确认。',
             'parameters':{'type':'object','properties':{'entity_id':{'type':'string','enum':list(self.allowed)},
                 'action':{'type':'string'},'route':{'type':'string','enum':['auto','native','home_assistant']},
@@ -235,6 +252,8 @@ class HomeAssistantService:
         return read
 
     async def invoke(self, name, args, session_key, user_text=""):
+        if self.read_only and name not in {'ha_entities', 'ha_state', 'ha_history', 'ha_services'}:
+            raise ValueError('home_assistant_read_only')
         if self.workflows and (name.startswith('ha_rule') or name.startswith('ha_task') or name=='ha_scene_run'):
             from core.services.home_tools import invoke
             return await invoke(self,name,args,session_key,user_text)

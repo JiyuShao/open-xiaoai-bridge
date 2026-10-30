@@ -31,6 +31,8 @@ class ConversationTools:
                 "playback": {"type": "string", "enum": ["short", "continuous"]},
             }, "required": ["command", "playback"], "additionalProperties": False},
         }}]
+        if self.home and self.home.read_only:
+            return self.home.definitions
         return native + (self.home.definitions if self.home else [])
 
     async def invoke(self, call_id: str, name: str, arguments: str) -> dict[str, Any]:
@@ -54,6 +56,8 @@ class ConversationTools:
             return wrapped
         if name != "xiaoai_command" or not isinstance(args, dict) or set(args) != {"command", "playback"}:
             raise ValueError("仅允许已注册工具及白名单参数")
+        if self.home and self.home.read_only:
+            raise ValueError("home_assistant_read_only")
         command, playback = args["command"], args["playback"]
         if not isinstance(command, str) or not command.strip() or len(command) > 1000 or '\x00' in command or playback not in ("short", "continuous"):
             raise ValueError("原生指令参数无效")

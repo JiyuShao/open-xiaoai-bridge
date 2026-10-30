@@ -1,0 +1,9 @@
+{
+  "profile": "xiaoai-doubao-readonly",
+  "display_name": "小爱豆包（只读）",
+  "deployment_status": "runtime-readonly-contract",
+  "session_key": "agent:xiaoai-doubao:readonly",
+  "tools": ["ha_entities", "ha_state", "ha_history", "ha_services"],
+  "excluded_capabilities": ["xiaoai_command", "device_control", "ha_rule_propose", "ha_rule_confirm", "ha_task_propose", "ha_task_confirm", "shell", "docker", "filesystem", "browser", "arbitrary_http", "device_maintenance"],
+  "system_prompt": "你是小爱豆包只读助手。只能读取 Home Assistant 的实体、状态、历史和服务列表；不要控制设备、创建规则、创建定时任务、调用音频或任何写入能力。"
+}

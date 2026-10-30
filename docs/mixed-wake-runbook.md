@@ -38,7 +38,7 @@ WAKE_MODE=mixed OPENAI_ENABLE=1 python main.py --check
 
 检查不联网、不监听端口、不生成语音。需要 KWS/VAD 六个非空文件，以及本地 SenseVoice 模型和 tokens；缺少模型不会自动下载。真正启动时先生成双关键词词表，并同步初始化 KWS、VAD、ASR 和后端配置，成功后才开放设备服务。模型加载失败会释放已创建的线程和 reader。
 
-需要持久化默认会话：`openai.history_path` 指向独立 SQLite 文件，默认 session 为 `agent:xiaoai-doubao:default`。跨唤醒沿用它；恢复历史的 Hermes 实际协议及真实 profile 创建仍需后续环境验证。
+需要持久化默认会话：可写 profile 使用 `agent:xiaoai-doubao:default`，HA 只读合同使用 `agent:xiaoai-doubao:readonly`。`X-Hermes-Session-Key` 只隔离记忆作用域，Hermes 活动 profile 仍须在服务端全局配置；恢复历史和真实 profile 权限需在独立环境验证。
 
 [混合容器示例](../docker-compose.mixed-wake.yml)默认只执行 `--check`，采用独立名称、测试 Token、卷和内部网络，不替换生产。Dockerfile 已包含两份模式配置；本次未构建或启动镜像。真实部署、网络放行和凭据配置不属于本次执行。
 
