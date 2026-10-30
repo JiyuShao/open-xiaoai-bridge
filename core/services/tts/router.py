@@ -1,6 +1,7 @@
 """Shared TTS provider routing and playback for all conversation backends."""
 
 import os
+import inspect
 import tempfile
 from typing import Any, Callable
 
@@ -97,7 +98,13 @@ class TTSRouter:
             )
             if output_mode == "record":
                 return False
-            return await cls._fallback_to_xiaoai(text, log_prefix=log_prefix)
+            return await cls._fallback_to_xiaoai(
+                text,
+                log_prefix=log_prefix,
+                provider=provider,
+                reason=type(exc).__name__,
+                request_sink=request_sink,
+            )
 
     @classmethod
     async def _record_request(
@@ -132,7 +139,7 @@ class TTSRouter:
             })
         if request_sink:
             result = request_sink(record)
-            if hasattr(result, "__await__"):
+            if inspect.isawaitable(result):
                 await result
         logger.info(f"[TTS] Recorded silent synthesis request: provider={provider}")
 
@@ -281,7 +288,30 @@ class TTSRouter:
                     )
 
     @classmethod
-    async def _fallback_to_xiaoai(cls, text: str, *, log_prefix: str) -> bool:
+    async def _fallback_to_xiaoai(
+        cls,
+        text: str,
+        *,
+        log_prefix: str,
+        provider: str,
+        reason: str,
+        request_sink: Callable[[dict[str, Any]], Any] | None = None,
+    ) -> bool:
+        """记录降级原因后调用原生音色；记录失败不能阻止降级。"""
+        if request_sink:
+            try:
+                record = request_sink({
+                    "event": "tts_fallback",
+                    "from_provider": provider,
+                    "to_provider": cls.XIAOAI_TTS_SPEAKER,
+                    "reason": reason,
+                })
+                if inspect.isawaitable(record):
+                    await record
+            except Exception as exc:
+                logger.warning(
+                    f"[{log_prefix}] Failed to record TTS fallback: {type(exc).__name__}"
+                )
         try:
             from core.ref import get_speaker
 

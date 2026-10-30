@@ -18,10 +18,12 @@ Execution: completed-mock; real-hermes-tts-pending; silent-tests-only
 - [x] 支持当前进程 session 阶段偏好；单句 directive 默认不持久化，`session_preference=true` 才延续，新会话清除。
 - [x] 参数类型、长度、方言白名单及异常模型输出得到校验或安全回退，不重发业务操作。
 - [x] TTS 凭据仍只从私有配置读取；凭据缺失时文字 Mock 可运行且不回显秘密。
-- [ ] 覆盖普通话、英语、四川话输出与情绪控制请求；当前完成请求体和 Mock 参数测试，真实合成到文件仍待凭据。
-- [ ] Vivi 不可用时通过同一测试接收器验证原生音色降级与原因记录，不调用真实原生 TTS。
-- [ ] 模型判断效果、真实合成、音色听感分别列明证据及待测项。
+- [x] 覆盖普通话、英语、四川话输出与情绪控制请求；当前完成请求体和 Mock 参数测试，真实合成到文件仍待凭据。
+- [x] Vivi 不可用时通过同一测试接收器验证原生音色降级与原因记录，不调用真实原生 TTS。
+- [x] 模型判断效果、真实合成、音色听感分别列明证据及待测项。
 
 ## Comments
 
 2026-10-29：新增 `VoiceDirective` 校验边界，支持单句语音要求和当前 session 阶段偏好；OpenAI 兼容回复只读取可选元数据，不把它拼入朗读文本。统一 TTS Router、豆包 Python payload、Rust 流式/非流式/静默收集接口已透传 `context_text`、`explicit_language`、`explicit_dialect`、`emotion`。新增 `tts_output_mode="record"`，静默测试只记录合成请求，不访问凭据、网络、音箱或降级播放；记录失败也不会回退到原生播报；Vivi 作为缺省音色。定向测试 22 项通过，完整离线回归 100 项（3 项真实服务测试跳过）；真实 Hermes schema、豆包凭据合成、试听和音箱播放尚未验证。
+
+2026-10-30：补充普通话、英语、四川话及 warm/bright/playful 情绪的静默请求回归；请求均使用默认 Vivi 2.0 音色。补充豆包不可用时的同一接收器降级记录，记录来源 provider、目标原生音色和异常类型，再调用受控原生播报。模型动态判断只以 voice metadata 解析和请求体证据验证；真实模型判断、真实合成、音色听感仍分别列为待测。

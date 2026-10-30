@@ -123,6 +123,50 @@ class BackendTTSRoutingTest(unittest.IsolatedAsyncioTestCase):
             )
         speaker.play.assert_not_awaited()
 
+    async def test_record_mode_covers_mandarin_english_sichuan_and_emotion(self):
+        records = []
+        requests = (
+            ("普通话", VoiceDirective(explicit_language="zh", emotion="warm")),
+            ("English", VoiceDirective(explicit_language="en", emotion="bright")),
+            ("你好噻", VoiceDirective(explicit_language="zh", explicit_dialect="sichuan", emotion="playful")),
+        )
+        for text, directive in requests:
+            self.assertTrue(await TTSRouter.play(
+                text,
+                configured_provider="doubao",
+                tts_speaker=None,
+                voice_directive=directive,
+                output_mode="record",
+                request_sink=records.append,
+            ))
+        self.assertEqual([item["explicit_language"] for item in records], ["zh", "en", "zh"])
+        self.assertEqual([item["explicit_dialect"] for item in records], [None, None, "sichuan"])
+        self.assertEqual([item["emotion"] for item in records], ["warm", "bright", "playful"])
+        self.assertEqual([item["speaker"] for item in records], ["zh_female_vv_uranus_bigtts"] * 3)
+
+    async def test_provider_failure_records_reason_before_native_fallback(self):
+        speaker = unittest.mock.MagicMock()
+        speaker.play = AsyncMock(return_value=True)
+        records = []
+        config_manager = types.SimpleNamespace(
+            get_app_config=lambda *_args: {"app_id": "", "access_key": ""},
+        )
+        with patch.object(router_module.ConfigManager, "instance", return_value=config_manager), \
+             patch("core.ref.get_speaker", return_value=speaker):
+            self.assertTrue(await TTSRouter.play(
+                "你好",
+                configured_provider="doubao",
+                tts_speaker=None,
+                request_sink=records.append,
+            ))
+        self.assertEqual(records, [{
+            "event": "tts_fallback",
+            "from_provider": "doubao",
+            "to_provider": "xiaoai",
+            "reason": "ValueError",
+        }])
+        speaker.play.assert_awaited_once_with(text="你好", blocking=True)
+
     async def test_doubao_forwards_voice_directive_to_native_path(self):
         config = {
             "app_id": "test-app",
