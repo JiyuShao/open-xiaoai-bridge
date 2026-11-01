@@ -72,6 +72,7 @@ _tts_speed = float(os.environ.get("DOUBAO_TTS_SPEED", "1.0"))
 # 当作请求覆盖发送；这里仅把通道合同写清楚，避免 Bridge 自己按问题
 # 复杂度做判断。当前生产 Hermes 配置应保持 agent.reasoning_effort=low。
 _hermes_reasoning_default = "low"
+_chat_streaming = os.environ.get("HERMES_CHAT_STREAMING_ENABLE", "0").strip().lower() in _TRUE_VALUES
 
 APP_CONFIG = {
     "wakeup": {
@@ -123,6 +124,7 @@ APP_CONFIG = {
         "history_path": "app/xiaoai/chat-sessions.sqlite3",
         "history_max_messages": 20,
         "response_timeout": 120,
+        "chat_streaming": _chat_streaming,
         "tts_provider": "doubao",
         "tts_speaker": _tts_speaker,
         "tts_speed": _tts_speed,

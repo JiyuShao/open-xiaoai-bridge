@@ -1,4 +1,5 @@
 import asyncio
+import os
 import socket
 import subprocess
 import sys
@@ -258,10 +259,9 @@ APP_CONFIG = {
     "tts": {
         "doubao": {
             # 豆包语音合成 API 配置
-            # 文档地址: https://www.volcengine.com/docs/6561/1598757?lang=zh
+            # 文档地址: https://docs.volcengine.com/docs/doubao-voice/unidirectional-streaming-text-to-speech-http?lang=zh
             # 产品地址: https://www.volcengine.com/docs/6561/1871062
-            "app_id": "xxxx",         # 你的 App ID
-            "access_key": "xxxxxx",       # 你的 Access Key
+            "api_key": os.environ.get("DOUBAO_TTS_API_KEY", ""),
             "default_speaker": "zh_female_vv_uranus_bigtts",  # 音色 https://www.volcengine.com/docs/6561/1257544?lang=zh
             "audio_format": "pcm",  # 推荐默认值：局域网稳定环境下首音更快、播放更顺
             "stream": True,  # 推荐默认值：边合成边播放，首音延迟更低
@@ -326,6 +326,9 @@ APP_CONFIG = {
         "max_tokens": 512,
         "history_max_messages": 20,
         "response_timeout": 120,
+        # Hermes Chat Completions SSE is opt-in; set true only when the
+        # endpoint advertises text/event-stream support.
+        "chat_streaming": False,
         "tts_speed": 1.0,
         "tts_speaker": "xiaoai",
         "session_tts_speakers": {},
