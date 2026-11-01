@@ -1,10 +1,27 @@
 # 小爱豆包的 Home Assistant 工具
 
-写操作验收继续使用 Mock；真实 Hermes 和 Home Assistant 只读连接可以单独启用。`profiles/xiaoai-doubao.json` 与 `profiles/xiaoai-doubao-readonly.json` 是本地权限清单和测试合同，不能通过 OpenAI-compatible 请求切换 Hermes 的服务端活动 profile。Hermes 当前把活动 profile 作为服务端全局配置；Bridge 通过真实 `/v1/chat/completions` 接入，并在本地按对应合同过滤工具。部署前需在 Hermes 服务端选择与 Bridge 配置一致的 profile。模型只能使用请求中提供的语义工具；未知名称、任意参数、管理接口和重定向均被拒绝。
+生产 Bridge 的 HA 模式由 `HA_READ_ONLY` 和 `HA_ALLOW_ALL` 共同决定。`HA_ALLOW_ALL=1` 且 `HA_READ_ONLY=0` 时，Bridge 向 Hermes 暴露任意实体读取、服务列表和 `ha_call_service`：`domain`、`service` 与 `data` 原样交给 Home Assistant，服务调用结果进入操作记录并按请求 ID 去重。该模式放开的是 Home Assistant API 范围，不授予服务器 shell、Docker、文件系统、音箱运维或 Hermes 管理权限。规则和定时任务仍使用本系统提案/确认/持久化流程，调用的 HA 服务不再受实体白名单限制。
+
+`HA_ALLOW_ALL=0` 时沿用实体元数据白名单和语义控制边界；`HA_READ_ONLY=1` 时只读。`profiles/xiaoai-doubao.json` 与 `profiles/xiaoai-doubao-readonly.json` 是本地 profile 合同，不能通过 OpenAI-compatible 请求切换 Hermes 的服务端活动 profile。Hermes 当前把活动 profile 作为服务端全局配置；Bridge 通过真实 `/v1/chat/completions` 接入，并在本地按当前运行模式过滤工具。Hermes 自身的服务端工具仍由 Hermes 管理，不受请求里的 `tools: []` 影响。
 
 ## 配置与边界
 
-私有 `home_assistant` 配置包含 `enabled`、不带凭据/路径的 `base_url`、运行时 `token`、`entities`、可选 `read_only` 和 `workflows_path`（默认 `app/home-workflows.db`）。实体声明真实 `name`、`native: true|false`；未知原生映射不猜测。传感器可声明 `unit`、电量累计可声明 `history_kind: energy`，非标准状态/事件需明确列出 `states`/`events`。凭据不进入提示词、记录或普通日志。
+项目根目录的 [`.env.services.example`](../.env.services.example) 是唯一运行变量模板，统一管理启动模式、音箱 Token、Hermes、HA 与豆包 TTS（凭据、音色、语速）；`.env.example` 只保留指向它的说明。服务器统一在部署目录 `.env.services` 填写，设置 `chmod 600 .env.services`；私有文件已被 Git 忽略。Python 配置只读取注入变量，无需在代码中重复填写。
+
+配置文件由程序按运行模式自动选择，日常变量文件不填写 `CONFIG_PATH`；该变量仅保留给自定义配置的高级覆盖场景。
+
+在服务器 Compose 的 Bridge 服务中引用（相对于 Compose 文件目录）：
+
+```yaml
+services:
+  bridge:
+    env_file:
+      - ./.env.services
+```
+
+`env_file` 将运行变量注入容器；Compose 不再重复填写这些变量的值。`--env-file` 为 YAML 中的 `${...}` 替换提供值；模型挂载等 Compose 参数仍在编排中配置。已有 `environment` 中的同名变量优先于 `env_file`，不要在两处重复定义。原生/混合隔离测试编排继续使用显式测试参数，不能注入生产密钥。现有混合模式示例使用隔离网络，接真实服务还需配置可访问服务的网络。HA 只读开关不会关闭音频；静默验收运行独立的 `scripts.verify_live_readonly`，不启动音箱主程序。更改私有文件后需重建容器才会加载；生产切换记录和回退备份见 `docs/automated-acceptance.md`。
+
+私有 `home_assistant` 配置包含 `enabled`、不带凭据/路径的 `base_url`、运行时 `token`、可选 `entities`、`read_only`、`allow_all` 和 `workflows_path`（默认 `app/home-workflows.db`）。`allow_all` 由统一环境变量 `HA_ALLOW_ALL=1` 注入；此时 `entities` 可为空，但仍可放置名称、状态或事件元数据供规则/历史播报使用。白名单模式下实体声明真实 `name`、`native: true|false`；未知原生映射不猜测。传感器可声明 `unit`、电量累计可声明 `history_kind: energy`，非标准状态/事件需明确列出 `states`/`events`。凭据不进入提示词、操作记录或普通日志；任意服务调用的审计参数只保存数据键名和 SHA-256 摘要。
 
 `read_only: true` 时只向 Hermes 暴露 `ha_entities`、`ha_state`、`ha_history`、`ha_services`；不启动定时任务和自动化事件监听，也拒绝 `device_control`、规则、任务及任何写入。真实服务只读检查使用：
 
@@ -14,11 +31,11 @@ HERMES_BASE_URL=http://.../v1 HA_BASE_URL=http://... \
   python -m scripts.verify_live_readonly
 ```
 
-可选 `HA_ENTITY_IDS=light.living,sensor.temperature` 检查指定状态，`HA_HISTORY_ENTITY=sensor.temperature` 检查该实体过去24小时历史；未提供历史实体时不对历史作结论。`--chat-text` 只向真实 Hermes 发送无工具连通性请求；脚本不调用 HA 写接口、Bridge 或音频播放。结果只打印状态码、实体状态和数量，不打印凭据。`X-Hermes-Session-Key` 只隔离服务端记忆作用域，不能当作 profile 权限隔离证明。
+可选 `HA_ENTITY_IDS=light.living,sensor.temperature` 检查指定状态，`HA_HISTORY_ENTITY=sensor.temperature` 检查该实体过去24小时历史；未提供历史实体时不对历史作结论。`--chat-text` 已禁用，传入时在任何网络请求前拒绝：当前 Hermes 不能按请求禁用服务端工具。脚本仅做 GET 读取，不调用 HA 写接口、Bridge 或音频播放。结果只打印状态码、实体状态和数量，不打印凭据。`X-Hermes-Session-Key` 只隔离服务端记忆作用域，不能当作 profile 权限隔离证明。
 
 启动时先验证配置再启动设备监听。定时任务和自动化提醒订阅由 `MainApp.loop` 托管，退出时取消；运行库应由单一 Bridge 进程独占，不能将同一 SQLite 文件提供给多个运行实例。启用这些功能会增加到点播报路径；当前只运行隔离 Mock，没有将其部署到生产。
 
-`ha_entities`、`ha_state`、`ha_services` 和 `ha_history` 只读允许实体。`device_control` 依据当前用户原话和配置选择唯一原生/HA路径，模型的 route 字段不构成授权。明确要求 HA 时强制 HA，否则已知原生优先，未知路径返回 needs_info。HA 调用后读取状态，匹配才返回 completed/observed_state；未观察到目标或传输异常为 unknown，不自动重试。原生仅报告 accepted_only。选路、实体、动作、确认依据和结果进入共享 SQLite 审计，一轮不能换路径双发。
+`ha_entities`、`ha_state`、`ha_services` 和 `ha_history` 在白名单模式只返回允许实体，在 allow-all 模式返回 Home Assistant 返回的实体/服务范围。allow-all 的 `ha_call_service` 直接执行任意已注册服务；HTTP 成功记录为 `completed/ha_http_200`，传输或超时记录为 `unknown`，不会自动重试。白名单模式的 `device_control` 仍依据当前用户原话和配置选择唯一原生/HA路径，模型的 route 字段不构成授权。明确要求 HA 时强制 HA，否则已知原生优先，未知路径返回 needs_info。选路、实体、动作、服务摘要、确认依据和结果进入共享 SQLite 审计，一轮不能换路径双发。
 
 门锁、climate、燃气、热水器、取暖器及 `risk: high` 强制确认，且不得加入后台规则或定时动作。确认绑定 session、实体、动作和选路，并要求下一轮用户原话为“确认/同意/是的/确认执行”；5 分钟过期、一次消费。设备确认仅在内存，重启需重新询问。启用 HA 时，自由文本原生工具只接受精确的持续播放音乐请求；设备操作必须走实体绑定的工具，以免绕过选路和确认。
 
@@ -42,4 +59,17 @@ HERMES_BASE_URL=http://.../v1 HA_BASE_URL=http://... \
 
 ## 验收限制
 
-文件音频和 Mock 写操作已覆盖控制、历史、场景、跨轮确认、提醒与退出。真实只读 Hermes/HA 检查通过 `scripts.verify_live_readonly` 进行；真实 Hermes 服务端 profile 是否已按合同配置、HA 写接口/触发结果、豆包音色、音箱和远场仍未验收。所有音频进入测试接收器或文件，Mock 写操作的完成只代表替身状态已观测；没有应用 Recorder、变更生产配置或连接音箱。
+文件音频和 Mock 写操作已覆盖控制、历史、场景、跨轮确认、提醒与退出。真实只读 Hermes/HA 检查通过 `scripts.verify_live_readonly` 进行；卧室台灯是唯一已做真实写入回读的设备，其他 HA 写接口、规则和提醒仍未逐项验收。所有隔离音频进入测试接收器或文件，Mock 写操作的完成只代表替身状态已观测。
+
+
+## 2026-10-31 软件与真实只读验证
+
+本节早期真实 Hermes 样本使用后来已移除的文字代理，不能代替原生直连验收。现行方案见[Hermes 原生直连](ambient-recording.md#hermes-原生直连)；Hermes 自行执行 skill，通过 Bridge 的鉴权接口使用 HA 工具。隔离测试中实际完成一次 Hermes → Bridge → HA 状态读取及文字回复；HA 实体、状态、服务、历史四个工具另行读取验证通过，控制、规则和任务均在传输前被拒绝。生产容器未重启，地址未切换。
+
+生产 HA 主配置没有显式声明 Recorder 的 365 天、auto_purge 或 auto_repack；它可能在 include 文件或使用默认值，未据此假定实际保留期。只读基线：数据库及日志合计 23,544,800 字节，可用磁盘约 177.3GB，单次 24 小时历史工具查询约 14ms。统计只代表本次传感器读取，不是全家庭性能承诺。365 天部署仍需选择正式实体白名单、合并配置及维护窗口，本轮未修改生产 Recorder。现有 `scripts.recorder_plan` 可生成待部署方案；模板的空实体白名单不能当作正式选择。
+
+## 2026-11-01 生产启用记录
+
+用户确认启用全部按需功能后，生产 `xiaoai-ai` 已将 `HA_READ_ONLY` 设为 `0`，因此控制、规则和定时工具可见；实际动作仍受实体白名单、唯一选路、确认、状态回读和审计约束。本次没有提交任何设备动作、规则确认或定时确认。
+
+已备份并应用 Home Assistant Recorder 365 天配置：仅 include `sensor.dmaker_cn_657218847_p28_temperature_p_9_1`，排除 RSS/linkquality 传感器，`auto_purge` 与 `auto_repack` 开启。配置校验和重启后校验通过。服务器备份位于 `/mnt/data/xiaoai-native-wake/backups/device-safety-20261101T053321Z/`；早期“未应用”段落是历史记录。

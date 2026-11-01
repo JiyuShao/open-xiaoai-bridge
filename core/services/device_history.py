@@ -21,11 +21,15 @@ def history_range(period, now=None):
 
 
 class DeviceHistory:
-    def __init__(self, client, entities):
-        self.client, self.entities = client, entities
+    def __init__(self, client, entities, *, allow_all=False):
+        self.client, self.entities, self.allow_all = client, entities, allow_all is True
 
     async def query(self, entity_id, period, *, now=None):
-        if entity_id not in self.entities:
+        if self.allow_all:
+            if not isinstance(entity_id, str) or entity_id.count('.') != 1:
+                raise ValueError('invalid_entity_id')
+            self.entities.setdefault(entity_id, {'name': entity_id})
+        elif entity_id not in self.entities:
             raise ValueError('entity_not_allowed')
         start, end = history_range(period, now)
         timer = perf_counter()

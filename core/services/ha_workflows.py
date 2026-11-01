@@ -20,7 +20,15 @@ class HomeWorkflows:
     async def validate_actions(self, actions):
         if not isinstance(actions,list) or not 1<=len(actions)<=10:
             raise ValueError('需要1到10个明确动作')
-        services={item['entity_id']:item['actions'] for item in await self.home.services()}
+        service_rows = await self.home.services()
+        if self.home.allow_all:
+            services = {
+                f"{item['domain']}": set(item.get('actions', ()))
+                for item in service_rows
+                if isinstance(item, dict) and isinstance(item.get('domain'), str)
+            }
+        else:
+            services={item['entity_id']:item['actions'] for item in service_rows}
         for item in actions:
             if isinstance(item,dict) and set(item)=={'announce'}:
                 if not isinstance(item['announce'],str) or not 1<=len(item['announce'])<=500 or self.announce is None:
@@ -33,7 +41,8 @@ class HomeWorkflows:
             await self.home.state(entity_id)
             if self.home.is_high_risk(entity_id):
                 raise ValueError('高风险设备不允许后台规则执行')
-            if action not in services.get(entity_id,[]):
+            available = services.get(entity_id.split('.')[0], ()) if self.home.allow_all else services.get(entity_id, [])
+            if action not in available:
                 raise ValueError('service_not_available')
         return [dict(item) for item in actions]
 
@@ -47,7 +56,10 @@ class HomeWorkflows:
             self.home._entity(condition['entity_id'])
             await self.home.state(condition['entity_id'])
             # 事件限制为配置明确允许的枚举，不接受任意HA事件或管理事件。
-            if condition['event'] not in self.home.allowed[condition['entity_id']].get('events',[]):
+            if self.home.allow_all:
+                if not isinstance(condition['event'], str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', condition['event']):
+                    raise ValueError('invalid_event_type')
+            elif condition['event'] not in self.home.allowed[condition['entity_id']].get('events',[]):
                 raise ValueError('event_not_allowed')
             return {'platform':'event','event_type':condition['event'],'event_data':{'entity_id':condition['entity_id']}}
         entity_id=condition.get('entity_id')

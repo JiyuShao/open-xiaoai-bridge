@@ -1,5 +1,6 @@
-"""HA语义边界：凭据保留在传输层，只允许配置内实体和已注册动作。"""
+"""HA 语义入口：凭据保留在传输层，按运行模式提供读取、语义控制或完整 HA 服务调用。"""
 
+import hashlib
 import json
 import re
 import time
@@ -90,6 +91,16 @@ class HomeAssistantClient:
         domain = entity_id.split('.')[0]
         return await self._request('POST',f'/api/services/{domain}/{action}',{**data,'entity_id':entity_id})
 
+    async def call_service_raw(self, domain: str, service: str, data: dict[str, Any]):
+        """Call an explicitly named HA service in allow-all mode."""
+        if not isinstance(domain, str) or not re.fullmatch(r'[A-Za-z0-9_]+', domain):
+            raise ValueError('invalid_home_assistant_domain')
+        if not isinstance(service, str) or not re.fullmatch(r'[A-Za-z0-9_]+', service):
+            raise ValueError('invalid_home_assistant_service')
+        if not isinstance(data, dict):
+            raise ValueError('invalid_home_assistant_service_data')
+        return await self._request('POST', f'/api/services/{domain}/{service}', data)
+
 
 class HomeAssistantService:
     ACTIONS = {'light':('turn_on','turn_off'), 'switch':('turn_on','turn_off'),
@@ -103,8 +114,11 @@ class HomeAssistantService:
         bridge: NativeBridgeService,
         *,
         read_only: bool = False,
+        allow_all: bool = False,
     ):
-        if not isinstance(entities,dict) or not entities or any(
+        if not allow_all and (not isinstance(entities,dict) or not entities):
+            raise ValueError('HA需配置明确的实体和真实展示名称')
+        if not isinstance(entities,dict) or any(
             not isinstance(key,str) or len(key)>128 or key.count('.')!=1
             or not all(part.replace('_','').isalnum() for part in key.split('.'))
             or not isinstance(value,dict) or not isinstance(value.get('name'),str)
@@ -112,11 +126,12 @@ class HomeAssistantService:
         ):
             raise ValueError('HA需配置明确的实体和真实展示名称')
         self.read_only = read_only is True
+        self.allow_all = allow_all is True
         self.workflows = None
         self.tasks = None
         self.client, self.allowed, self.bridge = client, dict(entities), bridge
         from core.services.device_history import DeviceHistory
-        self.history = DeviceHistory(client, self.allowed)
+        self.history = DeviceHistory(client, self.allowed, allow_all=self.allow_all)
         self._confirmations: dict[str, tuple[str, dict, float]] = {}
 
     def configure_workflows(self, path, announce):
@@ -131,6 +146,8 @@ class HomeAssistantService:
         self._confirmations={key:value for key,value in self._confirmations.items() if value[0]!=session and value[2]>=time.monotonic()}
 
     def _entity(self, entity_id):
+        if self.allow_all and isinstance(entity_id, str) and re.fullmatch(r'[A-Za-z0-9_]+\.[A-Za-z0-9_]+', entity_id):
+            return self.allowed.setdefault(entity_id, {'name': entity_id, 'native': False})
         if entity_id not in self.allowed:
             raise ValueError('entity_not_allowed')
         return self.allowed[entity_id]
@@ -140,14 +157,15 @@ class HomeAssistantService:
         meta = self._entity(entity_id)
         attributes = raw.get('attributes',{})
         return {'entity_id':entity_id,'name':meta['name'],'state':raw.get('state'),
-                'attributes':{key:attributes[key] for key in ('unit_of_measurement','device_class','supported_features') if key in attributes},
+                'attributes':{key:attributes[key] for key in ('unit_of_measurement','device_class','supported_features','assumed_state') if key in attributes},
                 'last_changed':raw.get('last_changed')}
 
     async def entities(self):
         states = await self.client.states()
         if not isinstance(states,list):
             raise ValueError('invalid_ha_states')
-        return [self._state(state) for state in states if isinstance(state,dict) and state.get('entity_id') in self.allowed]
+        return [self._state(state) for state in states if isinstance(state,dict)
+                and (self.allow_all or state.get('entity_id') in self.allowed)]
 
     async def state(self, entity_id):
         self._entity(entity_id)
@@ -160,6 +178,11 @@ class HomeAssistantService:
         raw = await self.client.services()
         if not isinstance(raw,list):
             raise ValueError('invalid_ha_services')
+        if self.allow_all:
+            return [
+                {'domain': item.get('domain'), 'actions': sorted(item.get('services',{}))}
+                for item in raw if isinstance(item,dict) and isinstance(item.get('domain'),str)
+            ]
         available = {item['domain']:item.get('services',{}) for item in raw if isinstance(item,dict) and 'domain' in item}
         return [{'entity_id':entity_id,'actions':[action for action in self.ACTIONS.get(entity_id.split('.')[0],())
                  if action in available.get(entity_id.split('.')[0],{})]} for entity_id in self.allowed]
@@ -219,7 +242,7 @@ class HomeAssistantService:
             await self.client.call_service(entity_id,action,data)
             state=await self.state(entity_id)
             expected={'turn_on':'on','turn_off':'off','open_cover':'open','close_cover':'closed','lock':'locked','unlock':'unlocked'}.get(action)
-            if expected and state['state']==expected:
+            if expected and state['state']==expected and not state['attributes'].get('assumed_state'):
                 return OperationOutcome('completed',True,state,confirmation='observed_state')
             return OperationOutcome('unknown',True,state,error='target_state_not_observed',confirmation='unknown')
         record=await self.bridge.run_operation('ha_control',meta['name']+' '+action,{**payload,'confirmed':high_risk},invoke,
@@ -228,15 +251,26 @@ class HomeAssistantService:
 
     @property
     def definitions(self):
+        entity_schema = {'type': 'string'} if self.allow_all else {'type': 'string', 'enum': list(self.allowed)}
         read = [{"type":"function","function":{
             "name":name,"description":description,"parameters":{"type":"object","properties":properties,
                 "required":list(properties),"additionalProperties":False}}} for name,description,properties in (
             ('ha_entities','读取允许的实体与当前状态，无需确认',{}),
-            ('ha_state','读取指定允许实体的状态，无需确认',{'entity_id':{'type':'string','enum':list(self.allowed)}}),
-            ('ha_history','服务器统计设备历史；缺口不猜测',{'entity_id':{'type':'string','enum':list(self.allowed)},'period':{'type':'string','enum':['今天','昨天','过去24小时','过去7天','本月','过去30天']}}),
+            ('ha_state','读取实体的状态，无需确认',{'entity_id':entity_schema}),
+            ('ha_history','服务器统计设备历史；缺口不猜测',{'entity_id':entity_schema,'period':{'type':'string','enum':['今天','昨天','过去24小时','过去7天','本月','过去30天']}}),
             ('ha_pending','读取当前session尚待确认的提案；用户说确认后先查询，再用对应确认工具提交ID',{}),
             ('ha_services','列出允许的设备动作及副作用边界；不能调用管理接口',{}),
         )]
+        if self.allow_all and not self.read_only:
+            read.append({'type':'function','function':{
+                'name':'ha_call_service',
+                'description':'直接调用 Home Assistant 任意 domain/service；仅在 HA_ALLOW_ALL=1 时提供，data 原样传给 HA；调用结果会写入操作记录。',
+                'parameters':{'type':'object','properties':{
+                    'domain':{'type':'string'},
+                    'service':{'type':'string'},
+                    'data':{'type':'object'},
+                },'required':['domain','service','data'],'additionalProperties':False},
+            }})
         if self.read_only:
             return [
                 item for item in read
@@ -251,14 +285,44 @@ class HomeAssistantService:
             read.extend(definitions())
         return read
 
-    async def invoke(self, name, args, session_key, user_text=""):
+    async def invoke(self, name, args, session_key, user_text="", *, request_id=None):
         if self.read_only and name not in {'ha_entities', 'ha_state', 'ha_history', 'ha_services'}:
             raise ValueError('home_assistant_read_only')
         if self.workflows and (name.startswith('ha_rule') or name.startswith('ha_task') or name=='ha_scene_run'):
             from core.services.home_tools import invoke
             return await invoke(self,name,args,session_key,user_text)
+        if name == 'ha_call_service' and self.allow_all and not self.read_only and isinstance(args, dict):
+            if set(args) != {'domain', 'service', 'data'}:
+                raise ValueError('home_assistant_tool_not_allowed')
+            domain, service, data = args['domain'], args['service'], args['data']
+            if not isinstance(data, dict):
+                raise ValueError('invalid_home_assistant_service_data')
+            # Keep arbitrary HA payloads out of the audit log while preserving
+            # request deduplication: a canonical digest identifies the exact
+            # payload without storing tokens, URLs, or entity attributes.
+            digest = hashlib.sha256(
+                json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()
+            ).hexdigest()
+            audit = {
+                'domain': domain,
+                'service': service,
+                'data_keys': sorted(data),
+                'data_sha256': digest,
+            }
+            async def invoke():
+                result = await self.client.call_service_raw(domain, service, data)
+                return OperationOutcome(
+                    'completed', True,
+                    {'domain': domain, 'service': service, 'result': result},
+                    confirmation='ha_http_200',
+                )
+            record = await self.bridge.run_operation(
+                'ha_service_call', f'{domain}.{service}', audit, invoke,
+                session_key=session_key, request_id=request_id,
+            )
+            return record.as_dict()
         if name == 'device_control' and set(args) <= {'entity_id','action','route','confirmation_id'} and {'entity_id','action','route'} <= set(args):
-            return await self.control(args['entity_id'],args['action'],{},args['route'],session_key=session_key,user_text=user_text,confirmation_id=args.get('confirmation_id'))
+            return await self.control(args['entity_id'],args['action'],{},args['route'],session_key=session_key,user_text=user_text,confirmation_id=args.get('confirmation_id'),request_id=request_id)
         if name == 'ha_pending' and args=={}:
             pending=await self.workflows.store.call('pending',session_key) if self.workflows else []
             pending.extend({'confirmation_id':identifier,'action':'device_control','proposal':payload} for identifier,(session,payload,expires) in self._confirmations.items() if session==session_key and expires>=time.monotonic())
@@ -270,5 +334,9 @@ class HomeAssistantService:
         if name == 'ha_state' and set(args)=={'entity_id'}:
             return await self.state(args['entity_id'])
         if name == 'ha_services' and args == {}:
-            return {'services':await self.services(),'mutations_require_policy':True}
+            return {
+                'services': await self.services(),
+                'mutations_require_policy': not self.allow_all,
+                'mode': 'allow_all' if self.allow_all else 'entity_policy',
+            }
         raise ValueError('home_assistant_tool_not_allowed')

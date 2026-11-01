@@ -54,6 +54,81 @@ async def home_environment():
 
 
 class HomeAssistantBoundaryTest(unittest.IsolatedAsyncioTestCase):
+    async def test_allow_all_exposes_generic_service_call_without_entity_whitelist(self):
+        from core.services.home_assistant import HomeAssistantService
+        from unittest.mock import AsyncMock
+        import types
+
+        client = types.SimpleNamespace(
+            call_service_raw=AsyncMock(return_value={"ok": True}),
+            states=AsyncMock(return_value=[]),
+            state=AsyncMock(),
+            services=AsyncMock(return_value=[]),
+            history=AsyncMock(return_value=[]),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            from core.services.native_bridge import NativeBridgeService
+            from core.services.operation_records import OperationRecords
+            bridge = NativeBridgeService(
+                OperationRecords(str(Path(temporary) / 'audit.db')),
+                lambda: None,
+                evidence='mock',
+            )
+            service = HomeAssistantService(client, {}, bridge, allow_all=True)
+            names = [item['function']['name'] for item in service.definitions]
+            self.assertIn('ha_call_service', names)
+            result = await service.invoke('ha_call_service', {
+                'domain': 'light', 'service': 'turn_on', 'data': {'entity_id': 'light.anything'},
+            }, 'test', '打开灯', request_id='ha-one')
+            self.assertEqual(result['status'], 'completed')
+            self.assertEqual(result['confirmation'], 'ha_http_200')
+            self.assertEqual(result['parameters']['operation'], 'ha_service_call')
+            self.assertNotIn('light.anything', str(result['parameters']))
+            self.assertIn('data_sha256', result['parameters'])
+            client.call_service_raw.assert_awaited_once_with('light', 'turn_on', {'entity_id': 'light.anything'})
+
+    async def test_allow_all_reads_entities_and_exposes_every_service(self):
+        from core.services.home_assistant import HomeAssistantService
+        from unittest.mock import AsyncMock
+        import types
+
+        client = types.SimpleNamespace(
+            states=AsyncMock(return_value=[
+                {'entity_id': 'sensor.private', 'state': '22', 'attributes': {'unit_of_measurement': '°C'}},
+            ]),
+            services=AsyncMock(return_value=[
+                {'domain': 'light', 'services': {'turn_on': {}, 'turn_off': {}}},
+                {'domain': 'shell_command', 'services': {'reboot': {}}},
+            ]),
+            state=AsyncMock(),
+            history=AsyncMock(return_value=[]),
+        )
+        service = HomeAssistantService(client, {}, None, allow_all=True)
+        entities = await service.entities()
+        self.assertEqual(entities[0]['entity_id'], 'sensor.private')
+        self.assertEqual(await service.services(), [
+            {'domain': 'light', 'actions': ['turn_off', 'turn_on']},
+            {'domain': 'shell_command', 'actions': ['reboot']},
+        ])
+
+    async def test_allow_all_rejects_invalid_service_path_before_network(self):
+        from core.services.home_assistant import HomeAssistantService
+        from core.services.native_bridge import NativeBridgeService
+        from core.services.operation_records import OperationRecords
+        with tempfile.TemporaryDirectory() as temporary:
+            client = HomeAssistantClient('http://localhost', 'mock-secret')
+            bridge = NativeBridgeService(
+                OperationRecords(str(Path(temporary) / 'audit.db')),
+                lambda: None,
+                evidence='mock',
+            )
+            service = HomeAssistantService(client, {}, bridge, allow_all=True)
+            result = await service.invoke('ha_call_service', {
+                'domain': '../api', 'service': 'turn_on', 'data': {},
+            }, 'test', '调用', request_id='bad-path')
+            self.assertEqual(result['status'], 'unknown')
+            self.assertEqual(result['error'], 'ValueError')
+
     async def test_allowed_entities_state_and_services_without_secrets_or_admin(self):
         async with home_environment() as (service,calls,_):
             entities=await service.entities()
@@ -77,6 +152,14 @@ class HomeAssistantBoundaryTest(unittest.IsolatedAsyncioTestCase):
 
 
 class HomeAssistantControlTest(unittest.IsolatedAsyncioTestCase):
+    async def test_assumed_state_does_not_claim_observed_completion(self):
+        async with home_environment() as (service, calls, states):
+            states['light.living']['attributes']['assumed_state'] = True
+            result = await service.control('light.living','turn_on',{},'home_assistant',
+                session_key='test',user_text='通过HA打开灯')
+            self.assertEqual(result['status'],'unknown')
+            self.assertNotEqual(result['confirmation'],'observed_state')
+
     async def test_explicit_ha_and_native_routing_never_double_send(self):
         from unittest.mock import AsyncMock
         import types
@@ -254,7 +337,8 @@ class LiveReadonlyConfigTest(unittest.TestCase):
         self.assertTrue(readonly["home_assistant"]["read_only"])
         self.assertEqual(readonly["openai"]["profile"], "xiaoai-doubao-readonly")
         self.assertEqual(readonly["openai"]["session_key"], "agent:xiaoai-doubao:readonly")
-        self.assertIn("只能读取 Home Assistant", readonly["openai"]["system_prompt"])
+        self.assertIn("Home Assistant接口保持只读", readonly["openai"]["system_prompt"])
+        self.assertEqual(readonly["openai"]["protocol"], "hermes_native")
 
         writable = self._load_mixed_config({"HA_ENABLE": "1", "HA_READ_ONLY": "0"})
         self.assertTrue(writable["home_assistant"]["enabled"])
@@ -278,6 +362,13 @@ class LiveReadonlyConfigTest(unittest.TestCase):
 
 
 class LiveReadonlyProbeTest(unittest.IsolatedAsyncioTestCase):
+    async def test_chat_is_rejected_before_any_network_request(self):
+        from scripts import verify_live_readonly
+        with patch.object(verify_live_readonly.aiohttp, "ClientSession") as session:
+            with self.assertRaises(ValueError):
+                await verify_live_readonly._hermes("http://hermes:8642/v1", "fake-key", "hermes-agent", "测试")
+            session.assert_not_called()
+
     async def test_probe_rejects_malformed_home_assistant_collections(self):
         from scripts import verify_live_readonly
 

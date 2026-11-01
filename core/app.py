@@ -108,7 +108,10 @@ class MainApp:
 
         self._native_bridge = None
         self._home_assistant = None
+        self.conversation_tools = {}
         self._home_task = None
+        self._ambient = None
+        self._ambient_task = None
 
         # Device state
         self.device_state = DeviceState.IDLE
@@ -155,6 +158,10 @@ class MainApp:
         return await EventManager.wakeup(text, source)
 
     @property
+    def record_tools(self):
+        return self._ambient.tools if self._ambient else None
+
+    @property
     def home_assistant(self):
         config = self.config.get_app_config("home_assistant", {})
         if not config.get("enabled", False):
@@ -167,6 +174,7 @@ class MainApp:
                 config.get("entities", {}),
                 self.native_bridge,
                 read_only=config.get("read_only", False),
+                allow_all=config.get("allow_all", False),
             )
             if not self._home_assistant.read_only:
                 self._home_assistant.configure_workflows(
@@ -274,6 +282,13 @@ class MainApp:
                     "Either enable audio input, or set input_mode='xiaoai_asr' in config."
                 )
 
+        # 默认禁用；显式启用时先验证本地模型和文字后端，再开放设备监听。
+        if os.environ.get('AMBIENT_RECORDING_ENABLE', '0').strip().lower() in ('1', 'true', 'yes', 'on'):
+            if not audio_input_enabled:
+                raise ValueError('常驻记录需要 AUDIO_INPUT_ENABLE=1')
+            from core.services.ambient.runtime import AmbientRuntime
+            self._ambient = AmbientRuntime.from_config(self.config)
+
         if self._enable_openai:
             _ = self.home_assistant  # HA配置同步校验先于设备监听。
 
@@ -298,6 +313,11 @@ class MainApp:
             self._start_config_watcher()
 
         time.sleep(0.1)
+
+        if self._ambient:
+            from core.services.audio.stream import GlobalStream
+            self._ambient.start(GlobalStream)
+            self._ambient_task = asyncio.run_coroutine_threadsafe(self._ambient.run(), self.loop)
 
         # Initialize XiaoAI service
         self._xiaoai_future = asyncio.run_coroutine_threadsafe(
@@ -516,6 +536,10 @@ class MainApp:
         if self._enable_mixed_wake and get_vad() is not None:
             get_vad().stop()
 
+        if self._ambient:
+            self._ambient.stop()
+        if self._ambient_task is not None:
+            self._ambient_task.cancel()
         if self._home_task is not None:
             self._home_task.cancel()
 
@@ -556,6 +580,10 @@ class MainApp:
 
     def check_service(self):
         """设备服务异常或意外结束时，让进程失败而非空转。"""
+        if self._ambient:
+            self._ambient.check()
+        if self._ambient_task is not None and self._ambient_task.done():
+            self._ambient_task.result()
         if self._home_task is not None and self._home_task.done():
             self._home_task.result()
         if self._xiaoai_future is not None and self._xiaoai_future.done():
